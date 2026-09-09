@@ -12,7 +12,7 @@
  *   - schematic embeds SYMBOL + DEVICE docs; COMPONENT partId/DeviceName link to them
  *   - pcb embeds FOOTPRINT + DEVICE docs, COMPONENT placements, PAD_NET/NET records
  *   - Edge.Cuts becomes a POLY BOARD_OUTLINE on layer 11
- *   - FILL track path uses the official closed-polygon format
+ *   - track segments become LINE records, track arcs become ARC records
  *   - schematic primitives: bus/bus_entry/junction/no_connect/labels/text/shapes
  *   - pcb primitives: via/track-arc/gr_arc/gr_circle/gr_poly/gr_text/zone/dimension
  *   - library dir → elibz2: device2.json + <name>.elibu with linked uuids
@@ -179,6 +179,11 @@ function main() {
     const devName = comp && JSON.parse(comp.body.attrs.DeviceName);
     const devHead = devDocs[0] && devDocs[0].head;
     assert(devName && devHead && devName.uuid === devHead.body.uuid, 'COMPONENT DeviceName uuid references the embedded DEVICE doc');
+    assert(typeof comp.body.zIndex === 'number', 'COMPONENT carries a numeric zIndex (official exports)');
+    const symAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Symbol' && r.body.parentId === comp.head.id);
+    const devAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Device' && r.body.parentId === comp.head.id);
+    assert(symAttr && symAttr.body.value === symDocs[0].head.body.uuid, 'COMPONENT Symbol ATTR references the SYMBOL doc uuid');
+    assert(devAttr && devAttr.body.value === devHead.body.uuid, 'COMPONENT Device ATTR references the DEVICE doc uuid');
     assert(!(comp.body.id), 'COMPONENT body carries no duplicate id field');
     assert(convSch.some(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'R1')
         && convSch.some(r => r.type === 'ATTR' && r.body.key === 'Value' && r.body.value === '10k'),
@@ -202,11 +207,10 @@ function main() {
     assert(layers.every(r => r.body.layerId !== undefined), 'LAYER payloads carry layerId');
     const outline = pcbDoc.records.find(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
     assert(outline && outline.body.layerId === 11, 'Edge.Cuts becomes a BOARD_OUTLINE POLY on layer 11');
-    const fill = pcbDoc.records.find(r => r.type === 'FILL');
-    assert(fill && fill.body.layerId === 2 && fill.body.netName === 'GND', 'B.Cu segments map to layerId 2 with net name');
-    const fp = fill && fill.body.path[0];
-    assert(fp && fp.length === 11 && fp[0] === fp[9] && fp[1] === fp[10] && fp[2] === 'L',
-      'FILL path uses the official closed-polygon format');
+    const track = pcbDoc.records.find(r => r.type === 'LINE');
+    assert(track && track.body.layerId === 2 && track.body.netName === 'GND', 'B.Cu segments become LINE tracks on layerId 2 with net name');
+    assert(track && Math.abs(track.body.width - kicadToEprj3(0.25)) < 0.01, 'track keeps the KiCad wire width');
+    assert(!pcbDoc.records.some(r => r.type === 'FILL'), 'tracks are not emitted as FILL fill regions');
 
     const fpDocs = pcbDocs.filter(d => d.head.body.docType === 'FOOTPRINT');
     const pcbDevDocs = pcbDocs.filter(d => d.head.body.docType === 'DEVICE');
@@ -246,8 +250,9 @@ function main() {
     const via = pcbDoc.records.find(r => r.type === 'VIA');
     assert(via && Math.abs(via.body.viaDiameter - kicadToEprj3(0.8)) < 0.01 && Math.abs(via.body.holeDiameter - kicadToEprj3(0.4)) < 0.01,
       'via becomes a VIA with via/hole diameters');
-    const arcTrack = pcbDoc.records.find(r => r.type === 'FILL' && JSON.stringify(r.body.path).includes('"ARC"'));
-    assert(!!arcTrack && arcTrack.body.netName === 'GND', 'track arc becomes a FILL with ARC segments');
+    const arcTrack = pcbDoc.records.find(r => r.type === 'ARC' && r.body.layerId === 2);
+    assert(!!arcTrack && arcTrack.body.netName === 'GND' && typeof arcTrack.body.angle === 'number',
+      'track arc becomes an ARC record with a sweep angle');
     const grArc = pcbDoc.records.find(r => r.type === 'ARC' && r.body.layerId === 3);
     assert(!!grArc, 'gr_arc becomes an ARC on the silkscreen layer');
     const grCircle = pcbDoc.records.find(r => r.type === 'POLY' && Array.isArray(r.body.path[0]) && r.body.path[0][0] === 'CIRCLE');

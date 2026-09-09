@@ -64,6 +64,17 @@ function loosen(type, body) {
     if (typeof b.italic === 'number') b.italic = !!b.italic;
     if (b.specialColor == null) b.specialColor = '';
   }
+  if (type === 'ATTR' && b.groupId === undefined && b.parentId != null) {
+    // sch link attrs (Symbol/Device/Unique ID) are written by the real app with
+    // null position/style fields and without groupId/locked — fill schema-safe
+    // stand-ins so the rest of the payload is still validated.
+    if (b.groupId === undefined) b.groupId = '';
+    if (b.locked === undefined) b.locked = false;
+    if (b.keyVisible == null) b.keyVisible = false;
+    if (b.valueVisible == null) b.valueVisible = false;
+    if (b.rotation == null) b.rotation = 0;
+    if (b.align == null) b.align = 'CENTER_MIDDLE';
+  }
   if (type === 'CANVAS') {                                     // real PCB docs write a bare {originX,originY}
     return {
       unit: 'mm', gridXSize: 100, gridYSize: 100, snapXSize: 10, snapYSize: 10,

@@ -22,7 +22,7 @@
  *     text/text_box→TEXT(+RECT), polyline/rectangle/circle/arc/bezier→POLY/RECT/
  *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→RECT+TEXT+NETLABEL,
  *     symbol→COMPONENT(+ATTR)
- *   PCB: segment→FILL, arc(track)→FILL(ARC path), via→VIA, footprint→FOOTPRINT doc
+ *   PCB: segment→LINE (copper track), arc(track)→ARC, via→VIA, footprint→FOOTPRINT doc
  *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC, gr_rect/gr_poly/gr_circle/
  *     bezier→POLY, gr_text→STRING, zone→POUR+POURED (keepout→REGION),
  *     dimension→DIMENSION, Edge.Cuts→POLY BOARD_OUTLINE
@@ -161,6 +161,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
   const pageRecords = sheetDocRecords(sch, sheet); // DOCHEAD SCH_PAGE + META + CANVAS
   let ticket = 2;
   let busEntryOrder = 0;
+  let componentZ = 0; // placed components need a real zIndex (official exports use 1,2,3…)
   const rec = (type, body) => {
     ticket++;
     pageRecords.push({ head: { type, ticket, id: randId() }, body: { ...body, zIndex: body.zIndex != null ? body.zIndex : ticket } });
@@ -335,11 +336,18 @@ function convertSchematic(srcFile, dst, sch, sheet) {
           x: toMil(x), y: flipY(y), rotation, isMirror,
           attrs: {
             Footprints: '[]', Devices: '[]',
-            DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' })
+            DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
+            FootprintName: null, pinClass: {}, differentialPairClass: {}, Symbols: '[]'
           },
-          zIndex: null
+          zIndex: ++componentZ
         }
       });
+      // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
+      // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
+      // without them the instance renders empty.
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', 'gge' + (++ggeCounter)));
       if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, toMil(x) + 10, flipY(y) - 10, 'LEFT_TOP'));
       if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Value', props.Value, toMil(x) + 10, flipY(y) + 10, 'LEFT_BOTTOM'));
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
@@ -428,6 +436,20 @@ function pageAttr(parentId, ticket, key, value, x, y, align) {
       fontWeight: null, italic: null, underline: null, strikeout: null, align,
       value, keyVisible: false, valueVisible: true, key,
       fillColor: null, groupId: '', parentId, zIndex: ticket, locked: false
+    }
+  };
+}
+
+// Non-visual binding ATTR (Symbol/Device/Unique ID): no position, as the
+// official app writes them on placed components.
+function pageLinkAttr(parentId, ticket, key, value) {
+  return {
+    head: { type: 'ATTR', ticket, id: randId() },
+    body: {
+      x: null, y: null, rotation: null, color: null, fontFamily: null, fontSize: null,
+      fontWeight: null, italic: null, underline: null, strikeout: null, align: null,
+      value, keyVisible: null, valueVisible: null, key,
+      fillColor: null, parentId, zIndex: ticket
     }
   };
 }
@@ -565,21 +587,14 @@ function convertPcb(srcFile, dst, pcb) {
       const layerId = layerToId(layerArr ? layerArr[0] : 'F.Cu');
       const netName = netOf(node, netNames);
       if (netName) usedNets.add(netName);
-      const x1 = toMil(start[0]), y1 = flipY(start[1]);
-      const x2 = toMil(end[0]), y2 = flipY(end[1]);
-      // Represent the track as a thin closed copper rectangle (FILL path is a
-      // polygon list in the official format: [x0,y0,"L",x1,y1,...,x0,y0]).
-      const hw = toMil(width) / 2;
-      const dx = x2 - x1, dy = y2 - y1;
-      const len = Math.hypot(dx, dy) || 1;
-      const nx = -dy / len * hw, ny = dx / len * hw;
-      push('FILL', {
-        ...pcbLineCommon, netName, layerId, width: toMil(width), fillStyle: 'SOLID',
-        path: [[r2(x1 + nx), r2(y1 + ny), 'L', r2(x2 + nx), r2(y2 + ny), r2(x2 - nx), r2(y2 - ny), r2(x1 - nx), r2(y1 - ny), r2(x1 + nx), r2(y1 + ny)]],
-        isBridgingCopper: false, networkList: [], refs: []
+      push('LINE', {
+        ...pcbLineCommon, netName, layerId,
+        startX: toMil(start[0]), startY: flipY(start[1]),
+        endX: toMil(end[0]), endY: flipY(end[1]),
+        width: toMil(width)
       });
     } else if (head === 'arc') {
-      // track arc: start/mid/end — closed polygon with ARC segments
+      // track arc: start/mid/end → ARC (start/end + CCW-positive sweep angle)
       const s = findSub(node, 'start');
       const m = findSub(node, 'mid');
       const e = findSub(node, 'end');
@@ -590,7 +605,15 @@ function convertPcb(srcFile, dst, pcb) {
       const layerId = layerToId(layerArr ? layerArr[0] : 'F.Cu');
       const netName = netOf(node, netNames);
       if (netName) usedNets.add(netName);
-      push('FILL', trackArcFill(s, m, e, width, layerId, netName, pcbLineCommon));
+      const x1 = toMil(s[0]), y1 = flipY(s[1]);
+      const mx = toMil(m[0]), my = flipY(m[1]);
+      const x2 = toMil(e[0]), y2 = flipY(e[1]);
+      const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
+      push('ARC', {
+        ...pcbLineCommon, netName, layerId,
+        startX: x1, startY: y1, endX: x2, endY: y2,
+        angle: r2(sweep), width: toMil(width)
+      });
     } else if (head === 'via') {
       const at = findSub(node, 'at');
       const sizeArr = findSub(node, 'size');
@@ -735,29 +758,6 @@ function strokeWidthOf(node, fallback) {
     if (sw) return parseFloat(sw[0]);
   }
   return fallback;
-}
-
-// Closed FILL polygon for a track arc (start/mid/end in KiCad mm)
-function trackArcFill(s, m, e, width, layerId, netName, common) {
-  const x1 = toMil(s[0]), y1 = flipY(s[1]);
-  const mx = toMil(m[0]), my = flipY(m[1]);
-  const x2 = toMil(e[0]), y2 = flipY(e[1]);
-  const { cx, cy, sweep } = arcSweep(x1, y1, mx, my, x2, y2);
-  const hw = toMil(width) / 2;
-  const pt = (x, y) => [r2(x), r2(y)];
-  const radial = (x, y, sign) => {
-    const L = Math.hypot(x - cx, y - cy) || 1;
-    return pt(x + (x - cx) / L * hw * sign, y + (y - cy) / L * hw * sign);
-  };
-  const [sox, soy] = radial(x1, y1, 1);
-  const [six, siy] = radial(x1, y1, -1);
-  const [eox, eoy] = radial(x2, y2, 1);
-  const [eix, eiy] = radial(x2, y2, -1);
-  return {
-    ...common, netName, layerId, width: toMil(width), fillStyle: 'SOLID',
-    path: [[sox, soy, 'ARC', r2(sweep), eox, eoy, 'L', eix, eiy, 'ARC', r2(-sweep), six, siy, 'L', sox, soy]],
-    isBridgingCopper: false, networkList: [], refs: []
-  };
 }
 
 // Edge.Cuts arc → closed outline single-polygon with an ARC segment
