@@ -25,23 +25,22 @@ function flipRot(deg) {
   return r;
 }
 
-// ---- KiCad stroke/fill → eprj3 numeric enums (cn/schematic/shape.md) ----
-// strokeStyle: 0 solid 1 dash 2 dot 3 dash-dot
-const STROKE_STYLE_MAP = { solid: 0, default: 0, dash: 1, dot: 2, dash_dot: 3, dash_dot_dot: 3 };
-// fillStyle: 0 none 1 solid (outline/background both become solid color fills)
+// ---- KiCad stroke/fill → eprj3 string enums (official e-stroke-style / e-sch-fill-style) ----
+const STROKE_STYLE_MAP = {
+  solid: 'SOLID', dash: 'SHORT_DASH', dot: 'DOT', dash_dot: 'DOT_DASH', dash_dot_dot: 'DOT_DASH'
+};
+// KiCad fill: none → no fill; outline/background → solid fill with default color
 function mapStroke(kicadStroke) {
   const w = kicadStroke && kicadStroke.width != null && isFinite(kicadStroke.width)
     ? Math.max(1, kicadToEprj3(kicadStroke.width)) : null;
-  return {
-    strokeWidth: w,
-    strokeStyle: kicadStroke && kicadStroke.type && kicadStroke.type in STROKE_STYLE_MAP
-      ? STROKE_STYLE_MAP[kicadStroke.type] : 0
-  };
+  const type = kicadStroke && kicadStroke.type && kicadStroke.type in STROKE_STYLE_MAP
+    ? STROKE_STYLE_MAP[kicadStroke.type] : 'SOLID'; // KiCad "default" → solid
+  return { strokeWidth: w, strokeStyle: type };
 }
 function mapFill(kicadFill) {
   // fillColor "" = no fill (docs); null = default color
-  if (kicadFill && kicadFill !== 'none') return { fillColor: null, fillStyle: 1 };
-  return { fillColor: '', fillStyle: 0 };
+  if (kicadFill && kicadFill !== 'none') return { fillColor: null, fillStyle: 'SOLID' };
+  return { fillColor: '', fillStyle: 'NONE' };
 }
 
 // Circumcenter of three points (colinear → midpoint fallback).
@@ -75,10 +74,11 @@ const PIN_ELECTRIC_MAP = {
   passive: 0, free: 0, unspecified: 0, power_in: 0, power_out: 0,
   open_collector: 2, open_emitter: 2, no_connect: 0
 };
-// KiCad pin graphic style → eprj3 pinShape bitfield (1 Clock 2 DOT)
+// KiCad pin graphic style → eprj3 pinShape string enum (e-pin-shape)
 const PIN_SHAPE_MAP = {
-  line: 0, inverted: 2, clock: 1, inverted_clock: 3, input_low: 0,
-  clock_low: 1, output_low: 0, edge_clock_high: 1, non_logic: 0
+  line: 'NONE', inverted: 'INVERTED', clock: 'CLOCK', inverted_clock: 'INVERTED_CLOCK',
+  input_low: 'NONE', clock_low: 'CLOCK', output_low: 'NONE', edge_clock_high: 'CLOCK',
+  non_logic: 'NONE'
 };
 
 function collectBboxMm(kicadSym) {
@@ -134,7 +134,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
           key, value,
           keyVisible: false, valueVisible: false,
           x: 0, y: 0, rotation: 0, color: null, fillColor: null, fontFamily: null,
-          fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null, align: null
+          fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null, align: 'CENTER_MIDDLE'
         }
       });
     };
@@ -148,7 +148,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         key: 'Symbol', value: kicadSym.name || '',
         keyVisible: false, valueVisible: false,
         x: 0, y: 0, rotation: 0, color: null, fillColor: null, fontFamily: null,
-        fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null, align: null
+        fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null, align: 'CENTER_MIDDLE'
       }
     });
   }
@@ -178,7 +178,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         body: {
           ...common,
           points: sh.pts.map(p => ({ x: kicadToEprj3(p.x), y: flipY(p.y) })),
-          closed: false
+          closed: false, startShape: 'NONE', endShape: 'NONE'
         }
       });
     } else if (sh.type === 'CIRCLE' && sh.r != null) {
@@ -220,7 +220,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         // rotation = direction from the connection end toward the body; the Y
         // flip mirrors the angle sense.
         rotation: flipRot(pin.rotation || 0),
-        color: null, pinShape: PIN_SHAPE_MAP[pin.style] != null ? PIN_SHAPE_MAP[pin.style] : 0
+        color: '#000000', pinShape: PIN_SHAPE_MAP[pin.style] != null ? PIN_SHAPE_MAP[pin.style] : 'NONE'
       }
     });
     const pinAttr = (key, value) => {
@@ -233,7 +233,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
           keyVisible: false, valueVisible: false,
           x: pin.x, y: flipY(pin.y), rotation: flipRot(pin.rotation || 0),
           color: null, fillColor: null, fontFamily: null, fontSize: null,
-          strikeout: null, underline: null, italic: null, fontWeight: null, align: null
+          strikeout: null, underline: null, italic: null, fontWeight: null, align: 'CENTER_MIDDLE'
         }
       });
     };
@@ -245,7 +245,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
   return { records, partId };
 }
 
-const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'ROUNDRECT', rect: 'RECT', custom: 'RECT', trapezoid: 'POLY' };
+const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'RECT', rect: 'RECT', custom: 'RECT', trapezoid: 'RECT' };
 
 function footprintPadLayerId(pad) {
   const layers = pad.layers || [];
@@ -283,6 +283,8 @@ function footprintPadRecord(pad, opts = {}) {
       padType: 'NORMAL',
       topSolderExpansion: 2, bottomSolderExpansion: 2,
       topPasteExpansion: 0, bottomPasteExpansion: 0,
+      connectMode: null, spokeSpace: null, spokeWidth: null, spokeAngle: null,
+      unusedInnerLayers: [], padLen: 0, attrsMap: {}, propagationDelay: 0,
       locked: false, zIndex: opts.zIndex
     }
   };
@@ -400,7 +402,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     ticket++;
     const padId = 'e' + randId();
     padIds.push({ num: pad.number || '', id: padId });
-    records.push(footprintPadRecord(pad, { ticket, id: padId }));
+    records.push(footprintPadRecord(pad, { ticket, id: padId, zIndex: ticket }));
   }
 
   // Library-style ATTRs (official footprint docs carry Footprint/Designator placeholders)

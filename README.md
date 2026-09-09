@@ -84,7 +84,7 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 
 ## 转换覆盖范围（best-effort）
 
-输出严格对齐 [官方 eprj3 格式示例](https://github.com/easyeda/easyeda-pro-eprj3-format)：
+输出严格对齐 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的官方格式文档（types / 字段定义 / JSON Schemas），并以真实导出数据校准 schema 与实际导出不一致之处；可另参考 [官方 eprj3 格式示例工程](https://github.com/easyeda/easyeda-pro-eprj3-format)：
 
 | KiCad | eprj3 |
 | --- | --- |
@@ -104,8 +104,8 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | pad 网络 / 椭圆孔 | `PAD_NET`（绑定元件引脚）+ `NET` 索引记录 / `holeType ROUND` 宽高 |
 | `segment` / `arc`（PCB 走线） | 对应层上的 `FILL`（直线为闭合细多边形；圆弧为带 `ARC` 段的闭合多边形） |
 | `via` | `VIA`（网络/孔径/盘径） |
-| `zone` | `POUR` + 每个 `filled_polygon` 一个 `POURED`；keepout → `REGION`（`prohibitType`） |
-| `dimension`（aligned/orthogonal/radial/leader） | `DIMENSION`（`LENGTH` / `RADIUS`） |
+| `zone` | `POUR`（`pourType`/`keepIsland`）+ 每个 `filled_polygon` 合并出的 `POURED`（`pourFill`，head id 关联 `POUR`）；keepout → `REGION`（`regionType PROHIBIT` + `prohibitType`） |
+| `dimension`（aligned/orthogonal/radial/leader） | `DIMENSION`（`dimensionType LENGTH-CONSTRAINT` + `controlDot`） |
 | `gr_line` / `gr_arc` / `gr_rect` / `gr_poly` / `gr_circle` / `bezier` | `LINE` / `ARC` / 闭合 `POLY`（圆为 `["CIRCLE",…]` 路径、贝塞尔为 `"C"` 段路径） |
 | `gr_text` | `STRING`（对齐 origin、镜像、knockout→reverse） |
 | `gr_rect`/`gr_line`/`gr_arc`/`gr_poly` on `Edge.Cuts` | 拼接为 `POLY` `BOARD_OUTLINE`（`layerId=11`） |
@@ -145,7 +145,9 @@ kicad-to-easyeda-eprj3/
 ├── example/
 │   ├── easyeda/              ← 嘉立创EDA专业版参考库包 easyeda-pro-libs.elibz2
 │   └── kicad/                ← 示例 KiCad 工程
-└── test/smoke.js
+└── test/
+    ├── smoke.js              ← 端到端冒烟测试（68 项断言）
+    └── validate-format.js    ← 用官方 JSON Schemas 校验生成记录的格式验证器
 ```
 
 ## 测试
@@ -154,10 +156,19 @@ kicad-to-easyeda-eprj3/
 npm test
 ```
 
+另可用官方 Schemas 逐条校验生成的记录（sch/pcb/lib 三种上下文，lib 按文档 docType 自动路由）：
+
+```bash
+node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
+```
+
+> 验证器依赖 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
+
 ## 相关项目
 
+- [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) — 嘉立创EDA Pro 文件格式技能包（types 索引、图元字段定义、JSON Schemas、validate.js），本仓库的格式权威参考
 - [easyeda-eprj3-skill](https://github.com/easyeda/easyeda-eprj3-skill) — 教 AI 编码助手从零生成 `.eprj3` 工程的技能包；本仓库的 `scripts/lib/eprj3.js` 与 `utils.js` 即来自该项目的核心库
-- eprj3 格式权威参考：https://github.com/easyeda/easyeda-pro-eprj3-format
+- [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format) — 官方 eprj3 格式示例工程
 
 ## License
 

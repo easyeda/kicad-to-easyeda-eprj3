@@ -219,7 +219,7 @@ function main() {
     const padNet = pcbDoc.records.find(r => r.type === 'PAD_NET');
     assert(padNet && padNet.head.id.includes(pcbComp.head.id) && padNet.head.id.includes('"1"') && padNet.body.padNet === 'GND',
       'PAD_NET links component pad to its net');
-    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === '["NET","GND"]'), 'NET index record exists for used nets');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === 'GND'), 'NET index record exists for used nets');
     const desig = pcbDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator');
     assert(desig && desig.body.value === 'R1' && desig.body.parentId === pcbComp.head.id, 'PCB Designator ATTR linked to COMPONENT');
 
@@ -227,10 +227,11 @@ function main() {
     const busEntry = pageDoc.records.find(r => r.type === 'BUSENTRY');
     assert(!!busEntry && busEntry.body.rotation % 90 === 0, 'bus_entry becomes a BUSENTRY with 90° rotation');
     assert(pageDoc.records.some(r => r.type === 'BUS'), 'bus becomes a BUS record');
-    const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 1);
+    const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 'SOLID');
     assert(!!junction && junction.body.radius > 0, 'junction becomes a filled CIRCLE dot');
-    const ncLine = pageDoc.records.find(r => r.type === 'LINE' && !r.body.lineGroup);
-    assert(!!ncLine, 'no_connect becomes ungrouped LINE records');
+    const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 2);
+    assert(ncLines.length === 2 && ncLines[0].body.lineGroup && ncLines[0].body.lineGroup === ncLines[1].body.lineGroup,
+      'no_connect becomes two LINE records sharing a group id');
     assert(pageDoc.records.some(r => r.type === 'NETLABEL' && r.body.value === 'GLOB'), 'global_label becomes a NETLABEL');
     const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
     assert(txt && Math.abs(txt.body.x - kicadToEprj3(40)) < 0.01 && txt.body.y < 0, 'text becomes a TEXT record in flipped mils');
@@ -256,12 +257,13 @@ function main() {
     const str = pcbDoc.records.find(r => r.type === 'STRING' && r.body.text === 'board');
     assert(!!str && str.body.layerId === 3, 'gr_text becomes a STRING record');
     const dim = pcbDoc.records.find(r => r.type === 'DIMENSION');
-    assert(dim && dim.body.type === 'LENGTH' && dim.body.coords.length === 8, 'dimension becomes a LENGTH DIMENSION');
+    assert(dim && dim.body.dimensionType === 'LENGTH-CONSTRAINT' && dim.body.controlDot.length === 8, 'dimension becomes a LENGTH-CONSTRAINT DIMENSION');
     const pour = pcbDoc.records.find(r => r.type === 'POUR');
     const poured = pcbDoc.records.find(r => r.type === 'POURED');
     assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1, 'zone becomes a POUR on F.Cu with its net');
-    assert(poured && pour && poured.body.targetId === pour.head.id, 'filled_polygon becomes a POURED linked to the POUR');
-    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === '["NET","VCC"]'), 'NET index record exists for zone net');
+    assert(poured && pour && poured.head.id === JSON.stringify(['POURED', pour.head.id]) && poured.body.pourFill.length >= 1,
+      'filled_polygon becomes a POURED linked to the POUR');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === 'VCC'), 'NET index record exists for zone net');
 
     // ---- KiCad library dir → elibz2 package ----
     const libDir = path.join(tmp, 'libsrc');

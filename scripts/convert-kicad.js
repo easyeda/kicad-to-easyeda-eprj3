@@ -46,7 +46,7 @@ const schema = [
 function toMil(x) { return kicadToEprj3(parseFloat(x)); }
 
 function docHead(docType, docUuid) {
-  return { head: { type: 'DOCHEAD' }, body: { docType, client: 'kicad-to-easyeda-eprj3', uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } };
+  return { head: { type: 'DOCHEAD' }, body: { docType, client: uuid(16), uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } };
 }
 
 function metaRec(title, extra = {}) {
@@ -172,14 +172,14 @@ function convertSchematic(srcFile, dst, sch, sheet) {
 
     if (head === 'wire' || head === 'bus') {
       const groupId = randId();
-      rec(head === 'wire' ? 'WIRE' : 'BUS', { zIndex: ticket + 1 });
+      rec(head === 'wire' ? 'WIRE' : 'BUS', head === 'wire' ? { groupId: '', locked: false } : { busEntry: {} });
       const pts = extractWirePoints(node);
       for (let i = 0; i < pts.length - 1; i++) {
         ticket++;
         pageRecords.push({
           head: { type: 'LINE', ticket, id: randId() },
           body: {
-            fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: null, strokeWidth: null,
+            fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
             startX: toMil(pts[i][0]), startY: flipY(pts[i][1]),
             endX: toMil(pts[i + 1][0]), endY: flipY(pts[i + 1][1]),
             lineGroup: groupId
@@ -196,7 +196,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       ticket++;
       pageRecords.push({
         head: { type: 'BUSENTRY', ticket, id: randId() },
-        body: { busGroupId: '', order: ++busEntryOrder, pointX: x2, pointY: y2, rotation: rot, locked: false, zIndex: ticket }
+        body: { order: ++busEntryOrder, pointX: x2, pointY: y2, rotation: rot, groupId: '', locked: false, zIndex: ticket }
       });
     } else if (head === 'junction') {
       const [x, y] = findAtXY(node);
@@ -205,16 +205,17 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       rec('CIRCLE', {
         partId: '', groupId: '', locked: false,
         centerX: toMil(x), centerY: flipY(y), radius: toMil(d) / 2,
-        strokeColor: null, strokeStyle: 0, fillColor: null, strokeWidth: 1, fillStyle: 1
+        strokeColor: null, strokeStyle: 'SOLID', fillColor: '#000000', strokeWidth: null, fillStyle: 'SOLID'
       });
     } else if (head === 'no_connect') {
       const [x, y] = findAtXY(node);
       const cx = toMil(x), cy = flipY(y);
       const h = 25; // half diagonal of the X marker (mil)
+      const ncGroup = randId();
       for (const [dx, dy] of [[h, h], [h, -h]]) {
         rec('LINE', {
-          fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: 0, strokeWidth: 2,
-          startX: cx - dx, startY: cy - dy, endX: cx + dx, endY: cy + dy
+          fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: null, strokeWidth: 2,
+          startX: cx - dx, startY: cy - dy, endX: cx + dx, endY: cy + dy, lineGroup: ncGroup
         });
       }
     } else if (head === 'label' || head === 'global_label' || head === 'hierarchical_label') {
@@ -244,16 +245,16 @@ function convertSchematic(srcFile, dst, sch, sheet) {
           partId: '', groupId: '', locked: false,
           dotX1: x1, dotY1: y1, dotX2: x2, dotY2: y2,
           radiusX: 0, radiusY: 0, rotation: 0,
-          strokeColor: null, strokeStyle: 0, fillColor: '', strokeWidth: 1, fillStyle: 0
+          strokeColor: null, strokeStyle: null, fillColor: '', strokeWidth: 1, fillStyle: 'NONE'
         });
       }
       ticket++;
       pageRecords.push({
         head: { type: 'TEXT', ticket, id: randId() },
         body: {
-          x: toMil(x), y: flipY(y), rotation: flipRot(rot || 0), color: null, fontFamily: null,
+          groupId: '', x: toMil(x), y: flipY(y), rotation: flipRot(rot || 0), color: null, fontFamily: null,
           fontSize: fx.size || 25, fontWeight: fx.bold || null, italic: fx.italic || null,
-          underline: null, align: fx.align, value: val, fillColor: null,
+          underline: null, strikeout: null, align: fx.align, value: val, fillColor: null,
           locked: false, zIndex: ticket
         }
       });
@@ -262,7 +263,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       if (pts.length < 2) continue;
       rec('POLY', shapeCommon(node, {
         points: pts.map(p => ({ x: toMil(p[0]), y: flipY(p[1]) })),
-        closed: false
+        closed: false, startShape: 'NONE', endShape: 'NONE'
       }));
     } else if (head === 'rectangle') {
       const s = findSub(node, 'start');
@@ -353,7 +354,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
 function shapeCommon(node, extra) {
   const strokeNode = findSubNode(node, 'stroke');
   const fillNode = findSubNode(node, 'fill');
-  const s = strokeNode ? mapStroke({ width: parseFloat((findSub(strokeNode, 'width') || [null])[0]), type: (findSub(strokeNode, 'type') || [null])[0] }) : { strokeWidth: null, strokeStyle: 0 };
+  const s = strokeNode ? mapStroke({ width: parseFloat((findSub(strokeNode, 'width') || [null])[0]), type: (findSub(strokeNode, 'type') || [null])[0] }) : { strokeWidth: null, strokeStyle: 'SOLID' };
   const f = mapFill(fillNode ? (findSub(fillNode, 'type') || [null])[0] : null);
   return {
     partId: '', groupId: '', locked: false,
@@ -376,13 +377,13 @@ function convertHierSheet(node, rec) {
     partId: '', groupId: '', locked: false,
     dotX1: x, dotY1: y, dotX2: x2, dotY2: y2,
     radiusX: 0, radiusY: 0, rotation: 0,
-    strokeColor: null, strokeStyle: 0, fillColor: '', strokeWidth: 2, fillStyle: 0
+    strokeColor: null, strokeStyle: null, fillColor: '', strokeWidth: 2, fillStyle: 'NONE'
   });
   const name = props['Sheet name'] || props['SheetName'] || '';
   if (name) {
     rec('TEXT', {
-      x: (x + x2) / 2, y: Math.max(y, y2) + 10, rotation: 0, color: null, fontFamily: null,
-      fontSize: 25, fontWeight: null, italic: null, underline: null, align: 'CENTER_BOTTOM',
+      groupId: '', x: (x + x2) / 2, y: Math.max(y, y2) + 10, rotation: 0, color: null, fontFamily: null,
+      fontSize: 25, fontWeight: null, italic: null, underline: null, strikeout: null, align: 'CENTER_BOTTOM',
       value: name, fillColor: null, locked: false
     });
   }
@@ -424,9 +425,9 @@ function pageAttr(parentId, ticket, key, value, x, y, align) {
     head: { type: 'ATTR', ticket, id: randId() },
     body: {
       x, y, rotation: 0, color: null, fontFamily: null, fontSize: 10,
-      fontWeight: null, italic: null, underline: null, align,
+      fontWeight: null, italic: null, underline: null, strikeout: null, align,
       value, keyVisible: false, valueVisible: true, key,
-      fillColor: null, parentId, zIndex: ticket, locked: false
+      fillColor: null, groupId: '', parentId, zIndex: ticket, locked: false
     }
   };
 }
@@ -598,11 +599,12 @@ function convertPcb(srcFile, dst, pcb) {
       const netName = netOf(node, netNames);
       if (netName) usedNets.add(netName);
       push('VIA', {
-        ...pcbLineCommon, netName, ruleName: '',
+        ...pcbLineCommon, groupId: '0', netName, ruleName: '',
         centerX: toMil(at[0]), centerY: flipY(at[1]),
         holeDiameter: drillArr ? toMil(drillArr[0]) : 0,
         viaDiameter: sizeArr ? toMil(sizeArr[0]) : 0,
-        viaType: 0, topSolderExpansion: null, bottomSolderExpansion: null
+        viaType: 'NORMAL', topSolderExpansion: null, bottomSolderExpansion: null,
+        unusedInnerLayers: [], propagationDelay: 0
       });
     } else if (head === 'footprint') {
       convertFootprint(node, {
@@ -705,10 +707,13 @@ function convertPcb(srcFile, dst, pcb) {
     push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path, polyType: 'BOARD_OUTLINE' });
   }
 
-  // NET index records (empty payload, as written by the official app)
+  // NET index records (payload as written by the official app; head id is the net name)
   for (const netName of usedNets) {
     ticket++;
-    body.push({ head: { type: 'NET', ticket, id: JSON.stringify(['NET', netName]) }, body: null });
+    body.push({
+      head: { type: 'NET', ticket, id: netName },
+      body: { netType: null, specialColor: null, retLine: true, differentialName: null, isPositiveNet: false, equalLengthGroupName: null }
+    });
   }
 
   writeRecords(dst, [...libDocs, ...docRecords, ...body]);
@@ -775,25 +780,26 @@ function pcbString(node, val) {
   const fontSize = size ? Math.max(5, toMil(size[0])) : 25;
   const thick = font ? findSub(font, 'thickness') : null;
   const justify = eff ? findSub(eff, 'justify') : null;
-  const col = justify && justify.includes('left') ? 0 : justify && justify.includes('right') ? 2 : 1;
-  const row = justify && justify.includes('top') ? 0 : justify && justify.includes('bottom') ? 2 : 1;
+  const h = justify && justify.includes('left') ? 'LEFT' : justify && justify.includes('right') ? 'RIGHT' : 'CENTER';
+  const v = justify && justify.includes('top') ? 'TOP' : justify && justify.includes('bottom') ? 'BOTTOM' : 'MIDDLE';
   const knockout = layerArr && layerArr[0] && /knockout/.test(layerArr[0]);
   return {
     partitionId: '', groupId: 0, locked: false, zIndex: -1, layerId,
-    positionX: at ? toMil(at[0]) : 0, positionY: at ? flipY(at[1]) : 0,
+    x: at ? toMil(at[0]) : 0, y: at ? flipY(at[1]) : 0,
     text: val, fontFamily: 'default', fontSize,
     strokeWidth: thick ? Math.max(1, toMil(thick[0])) : 6,
-    bold: !!(font && findFlags(font, 'bold').length),
-    italic: !!(font && findFlags(font, 'italic').length),
-    origin: row * 3 + col,
+    bold: font && findFlags(font, 'bold').length ? 1 : 0,
+    italic: font && findFlags(font, 'italic').length ? 1 : 0,
+    origin: `${h}_${v}`,
     angle: flipRot(at && at[2] || 0),
-    reverse: knockout ? 1 : 0, reverseExpansion: 0,
-    mirror: layerId === 2 ? 1 : 0,
-    width: null, height: null, path: null
+    reverse: !!knockout, expansion: 0,
+    mirror: layerId === 2,
+    specialColor: null
   };
 }
 
-// KiCad dimension → eprj3 DIMENSION (+ VALUE ATTR handled by caller's push)
+// KiCad dimension → eprj3 DIMENSION (payload shape follows real app exports:
+// dimensionType "LENGTH-CONSTRAINT" + controlDot, not the TS-shape schema)
 function convertDimension(node, push) {
   const typeArr = findSub(node, 'type');
   const ktype = typeArr ? typeArr[0] : 'aligned';
@@ -809,12 +815,10 @@ function convertDimension(node, push) {
   const style = findSubNode(node, 'style');
   const thick = style ? findSub(style, 'thickness') : null;
   const common = {
-    partitionId: '', groupId: 0, locked: false, zIndex: -1,
-    layerId, unit: 'mm', strokeWidth: thick ? Math.max(1, toMil(thick[0])) : 5,
-    precision: 2, textFollow: 1
+    layerId, dimensionType: 'LENGTH-CONSTRAINT', unit: '', strokeWidth: thick ? Math.max(1, toMil(thick[0])) : 0,
+    accuracy: 0, relationIds: [], locked: false, visible: true, cover: 0, name: '', valid: true
   };
-  let etype = null;
-  let coords = null;
+  let controlDot = null;
   if ((ktype === 'aligned' || ktype === 'orthogonal') && pts.length >= 2) {
     const heightArr = findSub(node, 'height');
     const hMm = heightArr ? parseFloat(heightArr[0]) : 0;
@@ -822,19 +826,16 @@ function convertDimension(node, push) {
     const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
     const L = Math.hypot(dx, dy) || 1;
     const nx = -dy / L * toMil(hMm), ny = dx / L * toMil(hMm);
-    etype = 'LENGTH';
-    coords = [p1[0], p1[1], p2[0], p2[1], r2(p2[0] + nx), r2(p2[1] + ny), r2(p1[0] + nx), r2(p1[1] + ny)];
-  } else if (ktype === 'radial' && pts.length >= 2) {
-    etype = 'RADIUS';
-    coords = [pts[0][0], pts[0][1], pts[1][0], pts[1][1]];
+    controlDot = [p1[0], p1[1], p2[0], p2[1], r2(p2[0] + nx), r2(p2[1] + ny), r2(p1[0] + nx), r2(p1[1] + ny)];
   } else if (ktype === 'leader' && pts.length >= 2) {
-    etype = 'LENGTH';
-    coords = [pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[1][0], pts[1][1], pts[0][0], pts[0][1]];
+    controlDot = [pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[1][0], pts[1][1], pts[0][0], pts[0][1]];
+  } else if (ktype === 'radial' && pts.length >= 2) {
+    controlDot = [pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[1][0], pts[1][1], pts[0][0], pts[0][1]];
   } else {
     warn(`dimension type "${ktype}" not convertible`);
     return;
   }
-  push('DIMENSION', { ...common, type: etype, coords });
+  push('DIMENSION', { ...common, controlDot });
 }
 
 // zone → POUR (+POURED per filled_polygon) or REGION for keepouts
@@ -872,17 +873,17 @@ function convertZone(node, { netNames, usedNets, push }) {
       const kind = it[0].v;
       const blocked = it[1]?.v === 'not_allowed';
       if (!blocked) continue;
-      if (kind === 'tracks') prohibit.push(5);
-      else if (kind === 'vias') prohibit.push(3);
-      else if (kind === 'pads' || kind === 'footprints') prohibit.push(2);
-      else if (kind === 'copperpour') prohibit.push(7);
+      if (kind === 'tracks') prohibit.push('TRACK');
+      else if (kind === 'vias') prohibit.push('VIA');
+      else if (kind === 'pads' || kind === 'footprints') prohibit.push('COMPONENT');
+      else if (kind === 'copperpour') prohibit.push('COPPER');
     }
     for (const lname of layers) {
       for (const poly of polys) {
         push('REGION', {
           partitionId: '', groupId: 0, locked: false, zIndex: -1,
           layerId: layerToId(lname), width, prohibitType: [...new Set(prohibit)],
-          path: [poly], name: nameArr ? nameArr[0] : ''
+          path: [poly], name: nameArr ? nameArr[0] : '', regionType: 'PROHIBIT'
         });
       }
     }
@@ -902,9 +903,10 @@ function convertZone(node, { netNames, usedNets, push }) {
       partitionId: '', groupId: 0, locked: false, zIndex: -1,
       netName, layerId: layerToId(lname), width,
       name: (nameArr && nameArr[0]) || '', order: prioArr ? parseInt(prioArr[0], 10) || 0 : 0,
-      path: polys, pourType: ['SOLID', 0], keepIsland: 0
+      path: polys, pourType: { pourType: 'SOLID', fineness: 8 }, keepIsland: false
     }, pourId);
-    // poured fill results
+    // poured fill results: one POURED per zone+layer, head id = ["POURED", pourId]
+    const pourFill = [];
     for (const it of node.slice(1)) {
       if (!(Array.isArray(it) && it[0].v === 'filled_polygon')) continue;
       const fpLayer = findSub(it, 'layer');
@@ -913,10 +915,10 @@ function convertZone(node, { netNames, usedNets, push }) {
       if (!pts || pts.length < 3) continue;
       const flat = [];
       for (const p of pts) flat.push(r2(toMil(p.x)), r2(flipY(p.y)));
-      push('POURED', {
-        partitionId: '', targetId: pourId, strokeWidth: 0, fill: 1,
-        path: [[...flat, flat[0], flat[1]]], zIndex: -1
-      });
+      pourFill.push({ id: randId(), strokeWidth: 0, fill: true, path: [[...flat, flat[0], flat[1]]] });
+    }
+    if (pourFill.length) {
+      push('POURED', { pourFill }, JSON.stringify(['POURED', pourId]));
     }
   }
 }
@@ -957,7 +959,7 @@ function convertFootprint(node, ctx) {
     if (!netName) return;
     body.push({
       head: { type: 'PAD_NET', ticket: nextTicket(), id: JSON.stringify(['PAD_NET', compId, p.num, p.id]) },
-      body: { partitionId: '', padNet: netName, padLen: null, propagationDelay: null, attrsMap: {} }
+      body: { partitionId: '', componentId: compId, padNum: p.num, padNet: netName, padId: p.id, padLen: 0, propagationDelay: 0, attrsMap: {} }
     });
   });
 }

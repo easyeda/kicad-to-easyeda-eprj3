@@ -84,7 +84,7 @@ The resulting `DeviceLED.elibz2` can be installed into your local libraries thro
 
 ## Conversion Coverage (best-effort)
 
-Output strictly follows the [official eprj3 format example](https://github.com/easyeda/easyeda-pro-eprj3-format):
+Output strictly follows the official format documentation from [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) (types / field definitions / JSON Schemas), calibrated against real exported data where the schemas diverge from actual app output; see also the [official eprj3 format example project](https://github.com/easyeda/easyeda-pro-eprj3-format):
 
 | KiCad | eprj3 |
 | --- | --- |
@@ -104,8 +104,8 @@ Output strictly follows the [official eprj3 format example](https://github.com/e
 | pad nets / oval drills | `PAD_NET` (component-pad binding) + `NET` index records / `holeType ROUND` width×height |
 | `segment` / `arc` (PCB traces) | `FILL` on the corresponding layer (straight tracks as closed thin polygons; track arcs as closed polygons with `ARC` segments) |
 | `via` | `VIA` (net, hole and pad diameters) |
-| `zone` | `POUR` + one `POURED` per `filled_polygon`; keepouts → `REGION` (`prohibitType`) |
-| `dimension` (aligned/orthogonal/radial/leader) | `DIMENSION` (`LENGTH` / `RADIUS`) |
+| `zone` | `POUR` (`pourType`/`keepIsland`) + one `POURED` per zone/layer (`pourFill`, head id linked to the `POUR`); keepouts → `REGION` (`regionType PROHIBIT` + `prohibitType`) |
+| `dimension` (aligned/orthogonal/radial/leader) | `DIMENSION` (`dimensionType LENGTH-CONSTRAINT` + `controlDot`) |
 | `gr_line` / `gr_arc` / `gr_rect` / `gr_poly` / `gr_circle` / `bezier` | `LINE` / `ARC` / closed `POLY` (circles as `["CIRCLE",…]` paths, beziers as `"C"`-segment paths) |
 | `gr_text` | `STRING` (alignment origin, mirroring, knockout→reverse) |
 | `gr_rect`/`gr_line`/`gr_arc`/`gr_poly` on `Edge.Cuts` | Stitched into `POLY` `BOARD_OUTLINE` (`layerId=11`) |
@@ -145,7 +145,9 @@ kicad-to-easyeda-eprj3/
 ├── example/
 │   ├── easyeda/              ← Reference EasyEDA Pro library package easyeda-pro-libs.elibz2
 │   └── kicad/                ← Sample KiCad project
-└── test/smoke.js
+└── test/
+    ├── smoke.js              ← End-to-end smoke suite (68 assertions)
+    └── validate-format.js    ← Format validator checking generated records against the official JSON Schemas
 ```
 
 ## Testing
@@ -154,10 +156,19 @@ kicad-to-easyeda-eprj3/
 npm test
 ```
 
+Generated records can additionally be validated one by one against the official Schemas (`sch`/`pcb`/`lib` contexts; `lib` routes each doc's records by its docType):
+
+```bash
+node test/validate-format.js <generated .esch2|.epcb2|.elibu> <sch|pcb|lib>
+```
+
+> The validator uses `validate.js` from [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill), found in the sibling directory by default, or via the `EASYEDA_FORMAT_SKILL` environment variable. Note: the official Schemas slightly diverge from real app exports (e.g. `POUR.pourType`, PCB `ATTR.groupID`, the `DIMENSION` structure); the validator is calibrated to the real exported data.
+
 ## Related Projects
 
+- [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) — The EasyEDA Pro file format skill pack (type index, per-primitive field definitions, JSON Schemas, validate.js); the authoritative format reference for this repository
 - [easyeda-eprj3-skill](https://github.com/easyeda/easyeda-eprj3-skill) — A skill pack that teaches AI coding assistants to generate `.eprj3` projects from scratch; `scripts/lib/eprj3.js` and `utils.js` in this repository come from that project's core library
-- Authoritative reference for the eprj3 format: https://github.com/easyeda/easyeda-pro-eprj3-format
+- [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format) — Official eprj3 format example project
 
 ## License
 
