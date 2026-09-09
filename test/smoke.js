@@ -7,10 +7,15 @@
  * asserts the invariants that have historically regressed:
  *   - KiCad symbol parser handles nested unit symbols (pins/shapes merged)
  *   - converter maps layer names to the right layer ids (B.Cu → 2)
- *   - converter emits one LAYER record per layer id it can emit
- *   - symbol instances keep Designator/Value ATTRs linked to the COMPONENT
- *   - mm → mil conversion factor (39.3700787)
- *   - import-kicad-lib injects a symbol into an existing project
+ *   - PCB doc defines the official 60-layer stack with layerId fields
+ *   - uuid linkage: page/pcb/ecfg DOCHEAD uuids equal the index profile uuids
+ *   - schematic embeds SYMBOL + DEVICE docs; COMPONENT partId/DeviceName link to them
+ *   - pcb embeds FOOTPRINT + DEVICE docs, COMPONENT placements, PAD_NET/NET records
+ *   - Edge.Cuts becomes a POLY BOARD_OUTLINE on layer 11
+ *   - FILL track path uses the official closed-polygon format
+ *   - schematic primitives: bus/bus_entry/junction/no_connect/labels/text/shapes
+ *   - pcb primitives: via/track-arc/gr_arc/gr_circle/gr_poly/gr_text/zone/dimension
+ *   - library dir → elibz2: device2.json + <name>.elibu with linked uuids
  */
 const fs = require('fs');
 const os = require('os');
@@ -20,6 +25,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPTS = path.join(ROOT, 'scripts');
 const { readRecords } = require(path.join(SCRIPTS, 'lib', 'eprj3'));
+const { kicadToEprj3 } = require(path.join(SCRIPTS, 'lib', 'kicad-to-eprj3'));
 
 let failures = 0;
 let checks = 0;
@@ -42,6 +48,7 @@ const kicadSymSample = `(kicad_symbol_lib (version 20220914) (generator kicad_sy
   (symbol "MY_RES" (pin_numbers hide) (pin_names (offset 0) hide) (in_bom yes) (on_board yes)
     (property "Reference" "R" (at 2.032 0 90) (effects (font (size 1.27 1.27))))
     (property "Value" "MY_RES" (at 0 0 90) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "MY_FP:R_0805" (at 0 0 0) (effects (font (size 1.27 1.27))))
     (symbol "MY_RES_0_1"
       (rectangle (start -1.016 -2.54) (end 1.016 2.54) (stroke (width 0.254) (type default)) (fill (type none)))
     )
@@ -53,21 +60,78 @@ const kicadSymSample = `(kicad_symbol_lib (version 20220914) (generator kicad_sy
 )`;
 
 const kicadSchSample = `(kicad_sch (version 20230121) (generator eeschema)
+  (lib_symbols
+    (symbol "Device:R" (pin_numbers hide)
+      (property "Reference" "R" (at 2 0 90) (effects (font (size 1.27 1.27))))
+      (symbol "Device:R_0_1"
+        (rectangle (start -1 -2.5) (end 1 2.5) (stroke (width 0.25) (type default)) (fill (type none)))
+      )
+      (symbol "Device:R_1_1"
+        (pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))
+        (pin passive line (at 0 -3.81 90) (length 1.27) (name "~") (number "2"))
+      )
+    )
+  )
   (wire (pts (xy 10 10) (xy 20 10)))
+  (bus (pts (xy 10 20) (xy 20 20)))
+  (bus_entry (at 10 20) (size 2.54 2.54) (stroke (width 0) (type default)))
+  (junction (at 15 10) (diameter 0) (color 0 0 0 0))
+  (no_connect (at 25 10) (uuid x))
   (label "NET1" (at 10 10 0) (effects (font (size 1.27 1.27))))
-  (symbol (lib_id "Device:R") (at 30 30 0) (unit 1)
-    (property "Reference" "R1" (at 30 28 0) (effects (font (size 1.27 1.27))))
-    (property "Value" "10k" (at 30 32 0) (effects (font (size 1.27 1.27))))
+  (global_label "GLOB" (at 20 30 0) (effects (font (size 1.27 1.27))))
+  (text "hello" (at 40 40 0) (effects (font (size 2 2))))
+  (rectangle (start 50 10) (end 60 20) (stroke (width 0.25) (type solid)) (fill none))
+  (circle (center 65 15) (radius 2) (stroke (width 0.25) (type solid)) (fill none))
+  (arc (start 70 10) (mid 72.5 12.5) (end 75 10) (stroke (width 0.25) (type solid)) (fill none))
+  (symbol (lib_id "Device:R") (at 30 50 0) (unit 1)
+    (property "Reference" "R1" (at 30 48 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 30 52 0) (effects (font (size 1.27 1.27))))
   )
 )`;
 
 const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
+  (net 0 "")
+  (net 1 "GND")
+  (net 2 "VCC")
   (segment (start 0 0) (end 10 0) (width 0.25) (layer "B.Cu") (net 1))
+  (arc (start 10 0) (mid 12.5 2.5) (end 15 0) (width 0.25) (layer "B.Cu") (net 1))
+  (via (at 15 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+  (gr_rect (start 0 0) (end 40 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_circle (center 20 25) (end 22 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
+  (gr_arc (start 30 25) (mid 32.5 22.5) (end 35 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
+  (gr_poly (pts (xy 0 25) (xy 5 25) (xy 5 30)) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
+  (gr_text "board" (at 10 35 0) (layer "F.SilkS") (effects (font (size 1.2 1.2) (thickness 0.2))))
+  (dimension (type aligned) (layer "Cmts.User") (pts (xy 0 0) (xy 40 0)) (height 5)
+    (gr_text "40 mm" (at 20 -2 0)) (style (thickness 0.2)))
+  (zone (net 2) (net_name "VCC") (layer "F.Cu") (name "zone1") (min_thickness 0.2)
+    (polygon (pts (xy 0 0) (xy 40 0) (xy 40 30) (xy 0 30)))
+    (filled_polygon (layer "F.Cu") (pts (xy 0.5 0.5) (xy 39.5 0.5) (xy 39.5 29.5) (xy 0.5 29.5))))
   (footprint "R_0603" (layer "F.Cu") (at 5 5)
-    (pad "1" smd rect (at -0.75 0) (size 0.8 0.8) (layers "F.Cu"))
-    (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)))
+    (property "Reference" "R1" (at 5 4 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at -0.75 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
+    (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
   )
 )`;
+
+const kicadFpSample = `(footprint "R_0805" (layer "F.Cu")
+  (at 0 0)
+  (attr smd)
+  (fp_text reference "REF**" (at 0 -1.43 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (fp_line (start -1 -0.6) (end 1 -0.6) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
+  (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask"))
+)`;
+
+function docSegments(records) {
+  // Split a record list into doc segments at DOCHEAD boundaries
+  const docs = [];
+  let cur = null;
+  for (const r of records) {
+    if (r.type === 'DOCHEAD') { cur = { head: r, records: [] }; docs.push(cur); }
+    else if (cur) cur.records.push(r);
+  }
+  return docs;
+}
 
 function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kicad2eprj3-smoke-'));
@@ -79,34 +143,173 @@ function main() {
 
     // ---- project conversion (batch: walks every .kicad_sch / .kicad_pcb) ----
     const dst = path.join(tmp, 'conv');
-    run([SCRIPTS + '/convert-kicad.js', 'convert', '--src', tmp, '--dst', dst, '--project-name', 'conv']);
+    run([SCRIPTS + '/convert-kicad.js', 'convert', tmp, dst, '--project-name', 'conv']);
     assert(fs.existsSync(path.join(dst, 'conv.eprj3')), 'convert-kicad creates the project index');
 
+    const index = JSON.parse(fs.readFileSync(path.join(dst, 'conv.eprj3'), 'utf8'));
+    const boards = Object.values(index.profile.boards);
+    const schEntry = Object.values(index.profile.schematics)[0];
+    const sheetEntry = Object.values(index.profile.sheets)[0];
+    const pcbEntry = Object.values(index.profile.pcbs)[0];
+    assert(boards.length === 1 && boards[0].uuid.length === 16, 'one board with a 16-hex uuid');
+    assert(index.owner_uuid.length === 32, 'owner uuid is 32 hex (official length)');
+
+    // ---- schematic side ----
+    assert(fs.existsSync(path.join(dst, 'sch', 'Schematic1', 'Schematic1.ecfg')), 'convert-kicad writes the schematic .ecfg');
+    assert(fs.existsSync(path.join(dst, 'sch', 'Schematic1', 'Schematic1.evar')), 'convert-kicad writes the schematic .evar');
+    const ecfg = readRecords(path.join(dst, 'sch', 'Schematic1', 'Schematic1.ecfg'));
+    const ecfgHead = ecfg.find(r => r.type === 'DOCHEAD');
+    assert(ecfgHead && ecfgHead.body.docType === 'SCH' && ecfgHead.body.uuid === schEntry.uuid,
+      '.ecfg is a SCH doc whose uuid equals the index schematic uuid');
+
     const convSch = readRecords(path.join(dst, 'sch', 'Schematic1', 'P1.esch2'));
-    assert(convSch.filter(r => r.type === 'COMPONENT').length === 1, 'convert-kicad maps symbol instances');
+    const schDocs = docSegments(convSch);
+    const pageDoc = schDocs[schDocs.length - 1];
+    const symDocs = schDocs.filter(d => d.head.body.docType === 'SYMBOL');
+    const devDocs = schDocs.filter(d => d.head.body.docType === 'DEVICE');
+    assert(pageDoc && pageDoc.head.body.docType === 'SCH_PAGE', 'last .esch2 segment is a SCH_PAGE doc');
+    assert(pageDoc.head.body.uuid === sheetEntry.uuid, 'page DOCHEAD uuid equals the index sheet uuid');
+    const pageMeta = pageDoc.records.find(r => r.type === 'META');
+    assert(pageMeta && pageMeta.body.title === 'P1' && pageMeta.body.schematic === schEntry.uuid && pageMeta.body.zIndex === 1,
+      'page META links title/schematic/zIndex per the official format');
+    assert(symDocs.length === 1 && devDocs.length === 1, '.esch2 embeds one SYMBOL and one DEVICE doc');
+    const symPart = symDocs[0] && symDocs[0].records.find(r => r.type === 'PART');
+    const comp = pageDoc.records.find(r => r.type === 'COMPONENT');
+    assert(comp && symPart && comp.body.partId === symPart.head.id, 'COMPONENT.partId references the embedded PART id');
+    const devName = comp && JSON.parse(comp.body.attrs.DeviceName);
+    const devHead = devDocs[0] && devDocs[0].head;
+    assert(devName && devHead && devName.uuid === devHead.body.uuid, 'COMPONENT DeviceName uuid references the embedded DEVICE doc');
+    assert(!(comp.body.id), 'COMPONENT body carries no duplicate id field');
     assert(convSch.some(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'R1')
         && convSch.some(r => r.type === 'ATTR' && r.body.key === 'Value' && r.body.value === '10k'),
       'convert-kicad emits Designator/Value ATTRs linked to the component');
-    const comp = convSch.find(r => r.type === 'COMPONENT');
-    assert(comp && comp.body.id && comp.head.id === comp.body.id, 'COMPONENT head id == body id');
-    const compAttr = convSch.filter(r => r.type === 'ATTR');
-    assert(compAttr.every(r => r.body.parentId === comp.body.id), 'every ATTR.parentId == COMPONENT id');
+    const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
+    assert(pageAttrs.every(r => r.body.parentId === comp.head.id), 'every page ATTR.parentId == COMPONENT id');
+    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup), 'wires become LINE records with a lineGroup');
+    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.startY < 0), 'schematic Y axis is flipped to Y-up');
 
+    // ---- pcb side ----
     const convPcb = readRecords(path.join(dst, 'pcb', 'PCB1.epcb2'));
-    assert(convPcb.filter(r => r.type === 'LAYER').length === 4, 'convert-kicad defines all layer ids it can emit');
-    const fill = convPcb.find(r => r.type === 'FILL');
-    assert(fill && fill.body.layerId === 2, 'convert-kicad maps B.Cu segments to layerId 2', `layerId=${fill && fill.body.layerId}`);
-    assert(convPcb.some(r => r.type === 'PAD' && r.body.num === '1'), 'convert-kicad converts footprint pads');
+    const pcbDocs = docSegments(convPcb);
+    const pcbDoc = pcbDocs[pcbDocs.length - 1];
+    assert(pcbDoc.head.body.docType === 'PCB' && pcbDoc.head.body.uuid === pcbEntry.uuid,
+      'PCB DOCHEAD uuid equals the index pcb uuid');
+    const pcbMeta = pcbDoc.records.find(r => r.type === 'META');
+    assert(pcbMeta && pcbMeta.body.title === 'PCB1' && pcbMeta.body.board === boards[0].uuid && pcbMeta.body.parent === '',
+      'PCB META links title/board/parent per the official format');
+    const layers = pcbDoc.records.filter(r => r.type === 'LAYER');
+    assert(layers.length === 60, 'PCB doc defines the official 60-layer stack', `layers=${layers.length}`);
+    assert(layers.every(r => r.body.layerId !== undefined), 'LAYER payloads carry layerId');
+    const outline = pcbDoc.records.find(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
+    assert(outline && outline.body.layerId === 11, 'Edge.Cuts becomes a BOARD_OUTLINE POLY on layer 11');
+    const fill = pcbDoc.records.find(r => r.type === 'FILL');
+    assert(fill && fill.body.layerId === 2 && fill.body.netName === 'GND', 'B.Cu segments map to layerId 2 with net name');
+    const fp = fill && fill.body.path[0];
+    assert(fp && fp.length === 11 && fp[0] === fp[9] && fp[1] === fp[10] && fp[2] === 'L',
+      'FILL path uses the official closed-polygon format');
 
-    // ---- library import into an existing project ----
-    run([SCRIPTS + '/import-kicad-lib.js', 'import', '--dir', dst, '--library', path.join(tmp, 'sample.kicad_sym'), '--component', 'MY_RES']);
-    const symFile = path.join(dst, 'sch', '__symbols__', 'MY_RES.esch2');
-    const symRecs = fs.existsSync(symFile) ? readRecords(symFile) : [];
-    const docHead = symRecs.find(r => r.type === 'DOCHEAD');
-    assert(!!docHead, 'import-kicad-lib writes a SYMBOL doc into __symbols__');
-    assert(symRecs.some(r => r.type === 'PIN'), 'imported symbol contains PIN records');
-    const rMiss = run([SCRIPTS + '/import-kicad-lib.js', 'import', '--dir', dst, '--library', path.join(tmp, 'sample.kicad_sym'), '--component', 'NOPE'], null);
-    assert(rMiss.status !== 0, 'import-kicad-lib fails on unknown component instead of creating a doc', `exit ${rMiss.status}`);
+    const fpDocs = pcbDocs.filter(d => d.head.body.docType === 'FOOTPRINT');
+    const pcbDevDocs = pcbDocs.filter(d => d.head.body.docType === 'DEVICE');
+    assert(fpDocs.length === 1 && pcbDevDocs.length === 1, '.epcb2 embeds FOOTPRINT and DEVICE docs');
+    assert(convPcb.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
+    const pcbComp = pcbDoc.records.find(r => r.type === 'COMPONENT');
+    assert(pcbComp && pcbComp.body.layerId === 1, 'PCB COMPONENT placements reference a copper layer');
+    const pcbDevName = pcbComp && JSON.parse(pcbComp.body.attrs.DeviceName);
+    assert(pcbDevName && pcbDevName.uuid === pcbDevDocs[0].head.body.uuid, 'PCB COMPONENT DeviceName references the DEVICE doc');
+    const padNet = pcbDoc.records.find(r => r.type === 'PAD_NET');
+    assert(padNet && padNet.head.id.includes(pcbComp.head.id) && padNet.head.id.includes('"1"') && padNet.body.padNet === 'GND',
+      'PAD_NET links component pad to its net');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === '["NET","GND"]'), 'NET index record exists for used nets');
+    const desig = pcbDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator');
+    assert(desig && desig.body.value === 'R1' && desig.body.parentId === pcbComp.head.id, 'PCB Designator ATTR linked to COMPONENT');
+
+    // ---- schematic primitives (new coverage) ----
+    const busEntry = pageDoc.records.find(r => r.type === 'BUSENTRY');
+    assert(!!busEntry && busEntry.body.rotation % 90 === 0, 'bus_entry becomes a BUSENTRY with 90° rotation');
+    assert(pageDoc.records.some(r => r.type === 'BUS'), 'bus becomes a BUS record');
+    const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 1);
+    assert(!!junction && junction.body.radius > 0, 'junction becomes a filled CIRCLE dot');
+    const ncLine = pageDoc.records.find(r => r.type === 'LINE' && !r.body.lineGroup);
+    assert(!!ncLine, 'no_connect becomes ungrouped LINE records');
+    assert(pageDoc.records.some(r => r.type === 'NETLABEL' && r.body.value === 'GLOB'), 'global_label becomes a NETLABEL');
+    const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
+    assert(txt && Math.abs(txt.body.x - kicadToEprj3(40)) < 0.01 && txt.body.y < 0, 'text becomes a TEXT record in flipped mils');
+    const pageRect = pageDoc.records.find(r => r.type === 'RECT' && Math.abs(r.body.dotX1 - kicadToEprj3(50)) < 0.01);
+    assert(!!pageRect, 'page rectangle becomes a RECT');
+    const pageCircle = pageDoc.records.find(r => r.type === 'CIRCLE' && Math.abs(r.body.radius - kicadToEprj3(2)) < 0.01);
+    assert(!!pageCircle, 'page circle becomes a CIRCLE');
+    const pageArc = pageDoc.records.find(r => r.type === 'ARC');
+    assert(!!pageArc && pageArc.body.referX != null, 'page arc becomes an ARC with a reference center');
+
+    // ---- pcb primitives (new coverage) ----
+    const via = pcbDoc.records.find(r => r.type === 'VIA');
+    assert(via && Math.abs(via.body.viaDiameter - kicadToEprj3(0.8)) < 0.01 && Math.abs(via.body.holeDiameter - kicadToEprj3(0.4)) < 0.01,
+      'via becomes a VIA with via/hole diameters');
+    const arcTrack = pcbDoc.records.find(r => r.type === 'FILL' && JSON.stringify(r.body.path).includes('"ARC"'));
+    assert(!!arcTrack && arcTrack.body.netName === 'GND', 'track arc becomes a FILL with ARC segments');
+    const grArc = pcbDoc.records.find(r => r.type === 'ARC' && r.body.layerId === 3);
+    assert(!!grArc, 'gr_arc becomes an ARC on the silkscreen layer');
+    const grCircle = pcbDoc.records.find(r => r.type === 'POLY' && Array.isArray(r.body.path[0]) && r.body.path[0][0] === 'CIRCLE');
+    assert(!!grCircle && grCircle.body.layerId === 3, 'gr_circle becomes a POLY with a CIRCLE path');
+    const grPoly = pcbDoc.records.find(r => r.type === 'POLY' && r.body.polyType === 'NORMAL' && !Array.isArray(r.body.path[0]));
+    assert(!!grPoly && grPoly.body.layerId === 3, 'gr_poly becomes a closed NORMAL POLY');
+    const str = pcbDoc.records.find(r => r.type === 'STRING' && r.body.text === 'board');
+    assert(!!str && str.body.layerId === 3, 'gr_text becomes a STRING record');
+    const dim = pcbDoc.records.find(r => r.type === 'DIMENSION');
+    assert(dim && dim.body.type === 'LENGTH' && dim.body.coords.length === 8, 'dimension becomes a LENGTH DIMENSION');
+    const pour = pcbDoc.records.find(r => r.type === 'POUR');
+    const poured = pcbDoc.records.find(r => r.type === 'POURED');
+    assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1, 'zone becomes a POUR on F.Cu with its net');
+    assert(poured && pour && poured.body.targetId === pour.head.id, 'filled_polygon becomes a POURED linked to the POUR');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === '["NET","VCC"]'), 'NET index record exists for zone net');
+
+    // ---- KiCad library dir → elibz2 package ----
+    const libDir = path.join(tmp, 'libsrc');
+    fs.mkdirSync(path.join(libDir, 'MY_FP.pretty'), { recursive: true });
+    fs.writeFileSync(path.join(libDir, 'MY_LIB.kicad_sym'), kicadSymSample);
+    fs.writeFileSync(path.join(libDir, 'MY_FP.pretty', 'R_0805.kicad_mod'), kicadFpSample);
+    const elibzPath = path.join(tmp, 'MYLIB.elibz2');
+    run([SCRIPTS + '/convert-kicad-lib.js', 'convert', libDir, elibzPath, '--name', 'MYLIB']);
+
+    const { readZip } = require(path.join(SCRIPTS, 'lib', 'zip'));
+    const zipEntries = readZip(fs.readFileSync(elibzPath));
+    assert(zipEntries.some(e => e.name === 'device2.json'), 'elibz2 contains device2.json');
+    const elibuEntry = zipEntries.find(e => e.name === 'MYLIB.elibu');
+    assert(!!elibuEntry, 'elibz2 contains <name>.elibu');
+
+    const device2 = JSON.parse(zipEntries.find(e => e.name === 'device2.json').data.toString('utf8'));
+    const symUuids = Object.keys(device2.symbols);
+    const fpUuids = Object.keys(device2.footprints);
+    assert(symUuids.length === 1 && fpUuids.length === 1, 'device2 indexes one symbol and one footprint');
+    assert(device2.symbols[symUuids[0]].docType === 2 && device2.footprints[fpUuids[0]].docType === 4,
+      'index docTypes: symbol 2 / footprint 4');
+    const devUuids = Object.keys(device2.devices);
+    const dev = device2.devices[devUuids[0]];
+    assert(dev && dev.attributes.Symbol === symUuids[0] && dev.attributes.Footprint === fpUuids[0],
+      'device attributes link the symbol + footprint (via the KiCad Footprint property)');
+    assert(dev && dev.attributes.Designator === 'R?', 'device Designator derives from the Reference property');
+
+    const elibuFile = path.join(tmp, 'MYLIB.elibu');
+    fs.writeFileSync(elibuFile, elibuEntry.data);
+    const elibu = readRecords(elibuFile);
+    const elibuDocs = docSegments(elibu);
+    // each library doc is written as two segments (DOCHEAD+META, DOCHEAD+records);
+    // merge segments that share the same doc uuid
+    const elibuByUuid = {};
+    for (const d of elibuDocs) {
+      const u = d.head.body.uuid;
+      if (!elibuByUuid[u]) elibuByUuid[u] = { head: d.head, records: [] };
+      elibuByUuid[u].records.push(...d.records);
+    }
+    const libSymDoc = elibuByUuid[symUuids[0]];
+    const libFpDoc = elibuByUuid[fpUuids[0]];
+    assert(!!libSymDoc && libSymDoc.head.body.uuid === symUuids[0], 'elibu SYMBOL doc uuid matches the device2 index');
+    assert(libSymDoc && libSymDoc.records.some(r => r.type === 'PIN'), 'library symbol doc contains PIN records');
+    assert(libSymDoc && libSymDoc.records.some(r => r.type === 'META' && r.body.docType === 2), 'symbol META carries docType 2');
+    assert(!!libFpDoc && libFpDoc.head.body.uuid === fpUuids[0], 'elibu FOOTPRINT doc uuid matches the device2 index');
+    assert(libFpDoc && libFpDoc.records.filter(r => r.type === 'LAYER').length === 19, 'footprint doc defines the 19-layer table');
+    assert(libFpDoc && libFpDoc.records.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
+    assert(libFpDoc && !libFpDoc.records.some(r => r.type === 'PART'), 'library footprint docs carry no PART record');
 
     // ---- parser (nested unit symbols) ----
     const { parseSymbolFile } = require(path.join(SCRIPTS, 'lib', 'kicad'));
@@ -118,7 +321,6 @@ function main() {
     assert(myRes && myRes.properties.Value === 'MY_RES', 'kicad parser reads properties');
 
     // ---- unit conversion ----
-    const { kicadToEprj3 } = require(path.join(SCRIPTS, 'lib', 'kicad-to-eprj3'));
     assert(Math.abs(kicadToEprj3(1) - 39.3700787) < 1e-6, 'kicadToEprj3 converts mm to mil (39.37)');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

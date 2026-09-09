@@ -51,6 +51,38 @@ function parse(text) {
   return parseNode();
 }
 
+function strokeInfo(node) {
+  // (stroke (width W) (type TYPE) (color R G B A))
+  const out = { width: null, type: null };
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it)) continue;
+    if (it[0].v === 'width') out.width = parseFloat(it[1]?.v);
+    else if (it[0].v === 'type') out.type = it[1]?.v;
+  }
+  return out;
+}
+
+function fillType(node) {
+  // (fill (type none|outline|background))
+  for (const it of node.slice(1)) {
+    if (Array.isArray(it) && it[0].v === 'type') return it[1]?.v || null;
+  }
+  return null;
+}
+
+// arc: (start X Y) (mid X Y) (end X Y)
+function extractArc(node) {
+  const out = {};
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it)) continue;
+    const h = it[0].v;
+    if (h === 'start') out.x1 = parseFloat(it[1].v), out.y1 = parseFloat(it[2].v);
+    if (h === 'mid') out.mx = parseFloat(it[1].v), out.my = parseFloat(it[2].v);
+    if (h === 'end') out.x2 = parseFloat(it[1].v), out.y2 = parseFloat(it[2].v);
+  }
+  return out;
+}
+
 function nodeSymbol(node) {
   const out = { name: '', properties: {}, pins: [], shapes: [] };
   if (!Array.isArray(node) || !node.length || node[0].v !== 'symbol') return out;
@@ -68,7 +100,8 @@ function nodeSymbol(node) {
     } else if (head === 'property') {
       out.properties[it[1]?.v] = it[2]?.v;
     } else if (head === 'pin') {
-      const pin = { name: '', number: '', x: 0, y: 0, length: 0, rotation: 0 };
+      // (pin <electrical> <graphic_style> (at X Y R) (length L) (name "..") (number ".."))
+      const pin = { name: '', number: '', x: 0, y: 0, length: 0, rotation: 0, electric: it[1]?.v || 'unspecified', style: it[2]?.v || 'line' };
       for (let j = 1; j < it.length; j++) {
         const sub = it[j];
         if (!Array.isArray(sub) || !sub.length) continue;
@@ -82,14 +115,26 @@ function nodeSymbol(node) {
       }
       out.pins.push(pin);
     } else if (head === 'rectangle' || head === 'rect') {
-      out.shapes.push({ type: 'RECT', ...extractXY(it) });
+      out.shapes.push({ type: 'RECT', ...extractXY(it), ...shapeStyle(it) });
     } else if (head === 'circle') {
-      out.shapes.push({ type: 'CIRCLE', ...extractXY(it) });
+      out.shapes.push({ type: 'CIRCLE', ...extractXY(it), ...shapeStyle(it) });
     } else if (head === 'polyline' || head === 'line') {
-      out.shapes.push({ type: 'POLY', pts: extractPts(it) });
+      out.shapes.push({ type: 'POLY', pts: extractPts(it), ...shapeStyle(it) });
     } else if (head === 'arc') {
-      out.shapes.push({ type: 'ARC', ...extractXY(it) });
+      out.shapes.push({ type: 'ARC', ...extractArc(it), ...shapeStyle(it) });
+    } else if (head === 'bezier') {
+      out.shapes.push({ type: 'BEZIER', pts: extractPts(it), ...shapeStyle(it) });
     }
+  }
+  return out;
+}
+
+function shapeStyle(node) {
+  const out = {};
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it)) continue;
+    if (it[0].v === 'stroke') out.stroke = strokeInfo(it);
+    else if (it[0].v === 'fill') out.fill = fillType(it);
   }
   return out;
 }
@@ -137,6 +182,142 @@ function parseSymbolFile(path) {
   return symbols;
 }
 
+// ---- generic s-expression node helpers shared by the converters ----
+
+function findSub(node, key) {
+  for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === key) return it.slice(1).map(x => x.v);
+  return null;
+}
+
+function findSubNode(node, key) {
+  for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === key) return it;
+  return null;
+}
+
+function findChildValue(node, key) {
+  for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === key && it[1]) return it[1].v;
+  return null;
+}
+
+function findFlags(node, name) {
+  const out = [];
+  for (const it of node.slice(1)) {
+    if (Array.isArray(it) && it[0].v === name) {
+      for (const x of it.slice(1)) if (x && typeof x.v === 'string') out.push(x.v);
+    }
+  }
+  return out;
+}
+
+function collectProperties(node) {
+  const out = {};
+  for (const it of node.slice(1)) {
+    if (Array.isArray(it) && it[0].v === 'property') out[it[1]?.v] = it[2]?.v;
+  }
+  return out;
+}
+
+function strokeWidthOf(node, fallback) {
+  const w = findSub(node, 'width');
+  if (w) return parseFloat(w[0]);
+  const stroke = findSubNode(node, 'stroke');
+  if (stroke) {
+    const sw = findSub(stroke, 'width');
+    if (sw) return parseFloat(sw[0]);
+  }
+  return fallback;
+}
+
+// (pad "<num>" <smd|thru_hole|np_thru_hole> <rect|circle|oval|roundrect|custom|trapezoid> ...)
+function extractPads(node) {
+  const pads = [];
+  for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === 'pad') {
+    const pad = { number: it[1]?.v || '', type: it[2]?.v || 'smd', shape: it[3]?.v || 'rect', at: [], size: [], layers: [], angle: 0, netName: '', drill: null, drillOval: null };
+    for (const sub of it.slice(1)) {
+      if (!Array.isArray(sub)) continue;
+      const sh = sub[0].v;
+      if (sh === 'at') { pad.at = sub.slice(1).map(x => x.v); if (pad.at.length > 2) pad.angle = parseFloat(pad.at[2]) || 0; }
+      else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
+      else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
+      else if (sh === 'drill') {
+        const nums = sub.slice(1).filter(x => typeof x.v === 'string' && /^[\d.]+$/.test(x.v)).map(x => x.v);
+        const isOval = sub.slice(1).some(x => x.v === 'oval');
+        pad.drill = nums[0];
+        if (isOval && nums[1]) pad.drillOval = nums[1];
+      }
+      else if (sh === 'net') pad.netName = sub[2]?.v || '';
+    }
+    pads.push(pad);
+  }
+  return pads;
+}
+
+function extractFpShapes(node) {
+  const out = [];
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it)) continue;
+    const h = it[0].v;
+    if (h === 'fp_line' || h === 'fp_rect') {
+      const xy = findSub(it, 'start');
+      const xy2 = findSub(it, 'end');
+      const layerArr = findSub(it, 'layer');
+      out.push({
+        kind: h,
+        x1: xy ? +xy[0] : 0, y1: xy ? +xy[1] : 0,
+        x2: xy2 ? +xy2[0] : 0, y2: xy2 ? +xy2[1] : 0,
+        layer: layerArr ? layerArr[0] : 'F.SilkS',
+        width: strokeWidthOf(it, 0.15)
+      });
+    } else if (h === 'fp_circle') {
+      const c = findSub(it, 'center');
+      const e = findSub(it, 'end');
+      const layerArr = findSub(it, 'layer');
+      if (!c || !e) continue;
+      const r = Math.hypot(+e[0] - +c[0], +e[1] - +c[1]);
+      out.push({ kind: h, cx: +c[0], cy: +c[1], r, layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+    } else if (h === 'fp_arc') {
+      const a = extractArc(it);
+      const layerArr = findSub(it, 'layer');
+      if (a.mx == null) continue;
+      out.push({ kind: h, ...a, layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+    } else if (h === 'fp_poly') {
+      const layerArr = findSub(it, 'layer');
+      out.push({ kind: h, pts: extractPts(it), layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+    }
+  }
+  return out;
+}
+
+// reference/value texts: KiCad 6+ stores them as (fp_text reference "R1" ...),
+// older/other files may use (property "Reference" "R1" ...)
+function extractFpTexts(node) {
+  const out = {};
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it) || it[0].v !== 'fp_text') continue;
+    const kind = it[1]?.v;       // reference | value | user
+    const text = it[2]?.v || '';
+    if ((kind === 'reference' || kind === 'value') && !out[kind === 'reference' ? 'Reference' : 'Value']) {
+      out[kind === 'reference' ? 'Reference' : 'Value'] = text;
+    }
+  }
+  const props = collectProperties(node);
+  if (props.Reference && !out.Reference) out.Reference = props.Reference;
+  if (props.Value && !out.Value) out.Value = props.Value;
+  return out;
+}
+
+// A .kicad_mod file parses to a single (footprint "NAME" ...) node.
+function extractFootprintNode(node) {
+  return {
+    name: node[1]?.v || 'FP',
+    pads: extractPads(node),
+    shapes: extractFpShapes(node),
+    texts: extractFpTexts(node),
+    at: findSub(node, 'at'),
+    layer: (findSub(node, 'layer') || ['F.Cu'])[0]
+  };
+}
+
 function parseFootprintFile(path) {
   const text = fs.readFileSync(path, 'utf8');
   const root = parse(text);
@@ -150,7 +331,8 @@ function parseFootprintFile(path) {
         if (!Array.isArray(it)) continue;
         const h = it[0].v;
         if (h === 'pad') {
-          const pad = { number: it[1].v, shape: it[2].v, type: it[3]?.v, at: [], size: [], layers: [] };
+          // (pad "<num>" <smd|thru_hole|np_thru_hole> <rect|circle|oval|roundrect|custom> ...)
+          const pad = { number: it[1].v, type: it[2]?.v, shape: it[3]?.v, at: [], size: [], layers: [] };
           for (let j = 1; j < it.length; j++) {
             const sub = it[j];
             if (!Array.isArray(sub)) continue;
@@ -158,7 +340,8 @@ function parseFootprintFile(path) {
             if (sh === 'at') pad.at = sub.slice(1).map(x => x.v);
             else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
             else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
-            else if (sh === 'drill') pad.drill = sub[1].v;
+            else if (sh === 'drill') pad.drill = sub[1]?.v;
+            else if (sh === 'net') { pad.netNum = sub[1]?.v; pad.netName = sub[2]?.v || ''; }
           }
           fp.pads.push(pad);
         } else if (h === 'fp_line' || h === 'fp_rect' || h === 'fp_circle' || h === 'fp_arc') {
@@ -171,4 +354,9 @@ function parseFootprintFile(path) {
   return fp;
 }
 
-module.exports = { parse, parseSymbolFile, parseFootprintFile, tokenize };
+module.exports = {
+  parse, parseSymbolFile, parseFootprintFile, tokenize, nodeSymbol,
+  extractPts, extractArc, extractXY, strokeInfo, fillType,
+  findSub, findSubNode, findChildValue, findFlags, collectProperties,
+  strokeWidthOf, extractPads, extractFpShapes, extractFpTexts, extractFootprintNode
+};

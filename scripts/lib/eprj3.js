@@ -65,7 +65,9 @@ function readRecords(filePath) {
 }
 
 function formatRecord(head, body) {
-  return JSON.stringify(head) + '||' + JSON.stringify(body) + '|';
+  // body null emits an empty payload ("|||"), as the official writer does for
+  // index-only records like NET.
+  return JSON.stringify(head) + '||' + (body === null ? '' : JSON.stringify(body)) + '|';
 }
 
 function writeRecords(filePath, records) {
@@ -101,8 +103,7 @@ class Project {
     p.name = finalName;
     p.indexFile = path.join(rootDir, `${finalName}.eprj3`);
     const now = Date.now();
-    const owner = uuid(16);
-    const board = uuid(8);
+    const owner = uuid(32);
     p.profile = {
       name: finalName,
       owner_uuid: owner,
@@ -151,7 +152,7 @@ class Project {
     let sch = Object.values(this.profile.profile.schematics).find(s => s.name === name);
     if (sch) return sch;
     sch = {
-      uuid: uuid(8),
+      uuid: uuid(16),
       name,
       board: Object.keys(this.profile.profile.boards)[0] || '',
       source: '',
@@ -160,12 +161,23 @@ class Project {
     };
     this.profile.profile.schematics[sch.uuid] = sch;
     if (!Object.keys(this.profile.profile.boards).length) {
-      const boardUuid = uuid(8);
+      const boardUuid = uuid(16);
       this.profile.profile.boards[boardUuid] = { uuid: boardUuid, title: 'Board1', zIndex: 1 };
       sch.board = boardUuid;
     }
     const dir = path.join(this.rootDir, 'sch', name);
     fs.mkdirSync(dir, { recursive: true });
+    // Schematic config (design rules) + assembly-variant sidecars. Both may be
+    // empty; the ecfg still needs its SCH document preamble.
+    const ecfgFile = path.join(dir, `${name}.ecfg`);
+    if (!fs.existsSync(ecfgFile)) {
+      writeRecords(ecfgFile, [
+        { head: { type: 'DOCHEAD' }, body: { docType: 'SCH', client: 'kicad-to-easyeda-eprj3', uuid: sch.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
+        { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, source: '', board: sch.board, zIndex: null } }
+      ]);
+    }
+    const evarFile = path.join(dir, `${name}.evar`);
+    if (!fs.existsSync(evarFile)) fs.writeFileSync(evarFile, '', 'utf8');
     this.save();
     return sch;
   }
@@ -174,7 +186,7 @@ class Project {
     let sheet = Object.values(this.profile.profile.sheets).find(s => s.schematic_uuid === sch.uuid && s.title === title);
     if (sheet) return sheet;
     sheet = {
-      uuid: uuid(8),
+      uuid: uuid(16),
       title,
       schematic_uuid: sch.uuid,
       zIndex: Object.values(this.profile.profile.sheets).filter(s => s.schematic_uuid === sch.uuid).length + 1,
@@ -196,7 +208,7 @@ class Project {
     let pcb = Object.values(this.profile.profile.pcbs).find(p => p.title === name);
     if (pcb) return pcb;
     pcb = {
-      uuid: uuid(8),
+      uuid: uuid(16),
       title: name,
       board: Object.keys(this.profile.profile.boards)[0] || '',
       parent_uuid: '',
@@ -259,22 +271,79 @@ class Project {
   }
 }
 
-// Shared document preambles (kept byte-identical to what init.js used to emit)
+// Shared document preambles. uuid linkage follows the official example:
+//   .esch2 page DOCHEAD uuid == profile.sheets uuid
+//   .epcb2     DOCHEAD uuid == profile.pcbs uuid
+//   .ecfg      DOCHEAD uuid == profile.schematics uuid
 function sheetDocRecords(sch, sheet) {
   return [
-    { head: { type: 'DOCHEAD' }, body: { docType: 'SCH', client: 'kicad-to-easyeda-eprj3', uuid: sch.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
-    { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: sheet.title, source: '', board: sch.board, zIndex: null } },
+    { head: { type: 'DOCHEAD' }, body: { docType: 'SCH_PAGE', client: 'kicad-to-easyeda-eprj3', uuid: sheet.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
+    { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: sheet.title, schematic: sch.uuid, source: '', zIndex: sheet.zIndex } },
     { head: { type: 'CANVAS', ticket: 2, id: 'CANVAS' }, body: { originX: 0, originY: 0 } }
   ];
 }
 
+// Official PCB layer table: id, layerType, layerName, activeColor, inactiveColor.
+const PCB_LAYERS = [
+  [1, 'TOP', 'Top Layer', '#ff0000', '#7f0000'],
+  [2, 'BOTTOM', 'Bottom Layer', '#0000ff', '#00007f'],
+  [3, 'TOP_SILK', 'Top Silkscreen Layer', '#ffcc00', '#7f6600'],
+  [4, 'BOT_SILK', 'Bottom Silkscreen Layer', '#66cc33', '#336619'],
+  [5, 'TOP_SOLDER_MASK', 'Top Solder Mask Layer', '#800080', '#400040'],
+  [6, 'BOT_SOLDER_MASK', 'Bottom Solder Mask Layer', '#aa00ff', '#55007f'],
+  [7, 'TOP_PASTE_MASK', 'Top Paste Mask Layer', '#808080', '#404040'],
+  [8, 'BOT_PASTE_MASK', 'Bottom Paste Mask Layer', '#800000', '#400000'],
+  [9, 'TOP_ASSEMBLY', 'Top Assembly Layer', '#33cc99', '#19664c'],
+  [10, 'BOT_ASSEMBLY', 'Bottom Assembly Layer', '#5555ff', '#2a2a7f'],
+  [11, 'OUTLINE', 'Board Outline Layer', '#ff00ff', '#7f007f'],
+  [12, 'MULTI', 'Multi-Layer', '#c0c0c0', '#606060'],
+  [13, 'DOCUMENT', 'Document Layer', '#ffffff', '#7f7f7f'],
+  [14, 'MECHANICAL', 'Mechanical Layer', '#f022f0', '#781178'],
+  ...Array.from({ length: 32 }, (_, i) => {
+    const colors = [
+      ['#999966', '#4c4c33'], ['#008000', '#004000'], ['#00ff00', '#007f00'], ['#bc8e00', '#5e4700'],
+      ['#70dbfa', '#386d7d'], ['#00cc66', '#006633'], ['#9966ff', '#4c337f'], ['#800080', '#400040'],
+      ['#008080', '#004040'], ['#15935f', '#a492f'], ['#000080', '#000040'], ['#00b400', '#005a00'],
+      ['#2e4756', '#17232b'], ['#99842f', '#4c4217'], ['#ffffaa', '#7f7f55'], ['#99842f', '#4c4217'],
+      ['#2e4756', '#17232b'], ['#3535ff', '#1a1a7f'], ['#8000bc', '#40005e'], ['#43ae5f', '#21572f'],
+      ['#c3ecce', '#617667'], ['#728978', '#39443c'], ['#39503f', '#1c281f'], ['#0c715d', '#06382e'],
+      ['#5a8a80', '#2d4540'], ['#2b937e', '#15493f'], ['#23999d', '#114c4e'], ['#45b4e3', '#225a71'],
+      ['#215da1', '#102e50'], ['#4564d7', '#22326b'], ['#6969e9', '#343474'], ['#9069e9', '#483474']
+    ];
+    return [15 + i, 'SIGNAL', `Inner${i + 1}`, colors[i][0], colors[i][1]];
+  }),
+  [47, 'HOLE', 'Hole Layer', '#222222', '#111111'],
+  [48, 'COMPONENT_SHAPE', 'Component Shape Layer', '#00cccc', '#006666'],
+  [49, 'COMPONENT_MARKING', 'Component Marking Layer', '#66ffcc', '#337f66'],
+  [50, 'PIN_SOLDERING', 'Pin Soldering Layer', '#cc9999', '#664c4c'],
+  [51, 'PIN_FLOATING', 'Pin Floating Layer', '#ff99ff', '#7f4c7f'],
+  [52, 'COMPONENT_MODEL', 'Component Model Layer', '#ffffff', '#7f7f7f'],
+  [53, '3D_SHELL_OUTLINE', '3D Shell Outline Layer', '#66ff99', '#337f4c'],
+  [54, '3D_SHELL_TOP', '3D Top Layer', '#ffccff', '#7f667f'],
+  [55, '3D_SHELL_BOTTOM', '3D Bottom Layer', '#0066cc', '#003366'],
+  [56, 'DRILL_DRAWING', 'Drill Drawing Layer', '#008080', '#004040'],
+  [57, 'OTHER', 'Ratline Layer', '#6464ff', '#32327f'],
+  [58, 'TOP_STIFFENER', 'Top Stiffener Layer', '#eee666', '#777333'],
+  [59, 'BOTTOM_STIFFENER', 'Bottom Stiffener Layer', '#ccff00', '#667f00'],
+  [361, 'SUBSTRATE', 'Dielectric1', '#000000', '#000000']
+];
+
+function pcbLayerRecords(startTicket = 3) {
+  return PCB_LAYERS.map(([layerId, layerType, layerName, activeColor, inactiveColor], i) => ({
+    head: { type: 'LAYER', ticket: startTicket + i, id: `["LAYER",${layerId}]` },
+    body: { layerId, layerType, layerName, use: true, show: true, locked: false, activeColor, activateTransparency: 1, inactiveColor, inactiveTransparency: 1 }
+  }));
+}
+
 function pcbDocRecords(pcb) {
+  const layerRecords = pcbLayerRecords();
+  const nextTicket = 3 + layerRecords.length;
   return [
     { head: { type: 'DOCHEAD' }, body: { docType: 'PCB', client: 'kicad-to-easyeda-eprj3', uuid: pcb.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
-    { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, board: pcb.board, source: '' } },
-    { head: { type: 'CANVAS', ticket: 2, id: 'CANVAS' }, body: { originX: 0, originY: 0 } },
-    { head: { type: 'LAYER', ticket: 3, id: '["LAYER",1]' }, body: { layerType: 'TOP', layerName: 'Top Layer', use: true, show: true, locked: false, activeColor: '#FF0000', activateTransparency: 1, inactiveColor: '#7F0000', inactiveTransparency: 1 } },
-    { head: { type: 'LAYER', ticket: 4, id: '["LAYER",2]' }, body: { layerType: 'BOTTOM', layerName: 'Bottom Layer', use: true, show: true, locked: false, activeColor: '#0000FF', activateTransparency: 1, inactiveColor: '#00007F', inactiveTransparency: 1 } }
+    { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, parent: '', source: '', board: pcb.board, zIndex: null } },
+    { head: { type: 'CANVAS', ticket: 2, id: 'CANVAS' }, body: { originX: 0, originY: 0, unit: 'mil', gridXSize: 5, gridYSize: 5, snapXSize: 5, snapYSize: 5, altSnapXSize: 1, altSnapYSize: 1, gridType: 'GRID', multiGridType: 'NONE', multiGridRatio: 5, highlightValue: 0.5, layerBrightness: 'NORMAL' } },
+    ...layerRecords,
+    { head: { type: 'ACTIVE_LAYER', ticket: nextTicket, id: 'ACTIVE_LAYER' }, body: { layerId: 1 } }
   ];
 }
 
@@ -333,5 +402,8 @@ module.exports = {
   removeRecord,
   Project,
   formatDate,
-  readDocHeadUuid
+  readDocHeadUuid,
+  sheetDocRecords,
+  pcbDocRecords,
+  pcbLayerRecords
 };
