@@ -1,3 +1,5 @@
+English | [中文](README.md)
+
 # kicad-to-easyeda-eprj3
 
 Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCad libraries to the EasyEDA Pro library format `.elibz2`.

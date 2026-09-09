@@ -1,3 +1,5 @@
+中文 | [English](README.en.md)
+
 # kicad-to-easyeda-eprj3
 
 将 KiCAD 工程文件转换为嘉立创EDA（EasyEDA Pro）的 eprj3 工程格式，并将 KiCad 库转换为嘉立创EDA库文件 `.elibz2`。Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCad libraries to the EasyEDA Pro library format `.elibz2`.
