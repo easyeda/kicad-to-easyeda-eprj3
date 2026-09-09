@@ -1,0 +1,21 @@
+{
+  "name": "kicad-to-easyeda-eprj3",
+  "version": "1.0.0",
+  "description": "Convert KiCad projects and symbol libraries to EasyEDA Pro .eprj3 projects",
+  "main": "scripts/convert-kicad.js",
+  "scripts": {
+    "test": "node test/smoke.js",
+    "convert": "node scripts/convert-kicad.js",
+    "import-lib": "node scripts/import-kicad-lib.js"
+  },
+  "engines": { "node": ">=18" },
+  "keywords": [
+    "kicad",
+    "easyeda",
+    "eprj3",
+    "lceda",
+    "converter",
+    "eda"
+  ],
+  "license": "Apache-2.0"
+}
