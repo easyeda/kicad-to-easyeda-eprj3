@@ -64,6 +64,10 @@ function loosen(type, body) {
     if (typeof b.italic === 'number') b.italic = !!b.italic;
     if (b.specialColor == null) b.specialColor = '';
   }
+  if (type === 'ATTR' && typeof b.version === 'string') {
+    // official v4 attrs carry version "2.0" as a string; the schema types it as object
+    delete b.version;
+  }
   if (type === 'ATTR' && b.groupId === undefined && b.parentId != null) {
     // sch link attrs (Symbol/Device/Unique ID) are written by the real app with
     // null position/style fields and without groupId/locked — fill schema-safe
@@ -89,6 +93,7 @@ function loosen(type, body) {
   if (type === 'POUR' && b.pourType && typeof b.pourType.pourType === 'string') {
     b.pourType = { pourType: {} };                             // schema wants an object where the app writes 'SOLID'
   }
+  if (type === 'PIN' && b.color == null) b.color = '';         // official exports write null; schema only allows ""
   return b;
 }
 

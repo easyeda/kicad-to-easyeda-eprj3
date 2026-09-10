@@ -34,7 +34,7 @@ const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts } = require('./lib/kicad');
 const {
   buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
-  circumcenter, arcSweep, mapStroke, mapFill
+  kicadToSchUnit, flipYSch, circumcenter, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords, pcbDocRecords } = require('./lib/eprj3');
 const { parseArgs, printHelp, die } = require('./lib/utils');
@@ -43,7 +43,9 @@ const schema = [
   { name: 'project-name', hasValue: true, desc: 'Override project name' }
 ];
 
+// PCB positions are mil; schematic positions are 0.254 mm units.
 function toMil(x) { return kicadToEprj3(parseFloat(x)); }
+function toSch(x) { return kicadToSchUnit(parseFloat(x)); }
 
 function docHead(docType, docUuid) {
   return { head: { type: 'DOCHEAD' }, body: { docType, client: uuid(16), uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } };
@@ -181,8 +183,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
           head: { type: 'LINE', ticket, id: randId() },
           body: {
             fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
-            startX: toMil(pts[i][0]), startY: flipY(pts[i][1]),
-            endX: toMil(pts[i + 1][0]), endY: flipY(pts[i + 1][1]),
+            startX: toSch(pts[i][0]), startY: flipYSch(pts[i][1]),
+            endX: toSch(pts[i + 1][0]), endY: flipYSch(pts[i + 1][1]),
             lineGroup: groupId
           }
         });
@@ -191,8 +193,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const at = findSub(node, 'at');
       const size = findSub(node, 'size');
       if (!at || !size) { warn('bus_entry without at/size'); continue; }
-      const x1 = toMil(at[0]), y1 = flipY(at[1]);
-      const x2 = toMil(parseFloat(at[0]) + parseFloat(size[0])), y2 = flipY(parseFloat(at[1]) + parseFloat(size[1]));
+      const x1 = toSch(at[0]), y1 = flipYSch(at[1]);
+      const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0])), y2 = flipYSch(parseFloat(at[1]) + parseFloat(size[1]));
       const rot = Math.round((((Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI) % 360) + 360) % 360 / 90) * 90 % 360;
       ticket++;
       pageRecords.push({
@@ -205,17 +207,17 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const d = dArr && parseFloat(dArr[0]) > 0 ? parseFloat(dArr[0]) : 1.016; // KiCad diameter 0 = auto (default mm)
       rec('CIRCLE', {
         partId: '', groupId: '', locked: false,
-        centerX: toMil(x), centerY: flipY(y), radius: toMil(d) / 2,
+        centerX: toSch(x), centerY: flipYSch(y), radius: toSch(d) / 2,
         strokeColor: null, strokeStyle: 'SOLID', fillColor: '#000000', strokeWidth: null, fillStyle: 'SOLID'
       });
     } else if (head === 'no_connect') {
       const [x, y] = findAtXY(node);
-      const cx = toMil(x), cy = flipY(y);
-      const h = 25; // half diagonal of the X marker (mil)
+      const cx = toSch(x), cy = flipYSch(y);
+      const h = 2.5; // half diagonal of the X marker (sch units = 0.635 mm)
       const ncGroup = randId();
       for (const [dx, dy] of [[h, h], [h, -h]]) {
         rec('LINE', {
-          fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: null, strokeWidth: 2,
+          fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: null, strokeWidth: 1,
           startX: cx - dx, startY: cy - dy, endX: cx + dx, endY: cy + dy, lineGroup: ncGroup
         });
       }
@@ -225,7 +227,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       ticket++;
       pageRecords.push({
         head: { type: 'NETLABEL', ticket, id: randId() },
-        body: { x: toMil(x), y: flipY(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 12, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
+        body: { x: toSch(x), y: flipYSch(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 5, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
       });
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
@@ -238,10 +240,10 @@ function convertSchematic(srcFile, dst, sch, sheet) {
         const pts = findPtsSub(node);
         let x1, y1, x2, y2;
         if (pts && pts.length >= 4) {
-          x1 = toMil(pts[0][0]); y1 = flipY(pts[0][1]); x2 = toMil(pts[2][0]); y2 = flipY(pts[2][1]);
+          x1 = toSch(pts[0][0]); y1 = flipYSch(pts[0][1]); x2 = toSch(pts[2][0]); y2 = flipYSch(pts[2][1]);
         } else if (s && e) {
-          x1 = toMil(s[0]); y1 = flipY(s[1]); x2 = toMil(e[0]); y2 = flipY(e[1]);
-        } else { x1 = x2 = toMil(x); y1 = y2 = flipY(y); }
+          x1 = toSch(s[0]); y1 = flipYSch(s[1]); x2 = toSch(e[0]); y2 = flipYSch(e[1]);
+        } else { x1 = x2 = toSch(x); y1 = y2 = flipYSch(y); }
         rec('RECT', {
           partId: '', groupId: '', locked: false,
           dotX1: x1, dotY1: y1, dotX2: x2, dotY2: y2,
@@ -253,8 +255,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       pageRecords.push({
         head: { type: 'TEXT', ticket, id: randId() },
         body: {
-          groupId: '', x: toMil(x), y: flipY(y), rotation: flipRot(rot || 0), color: null, fontFamily: null,
-          fontSize: fx.size || 25, fontWeight: fx.bold || null, italic: fx.italic || null,
+          groupId: '', x: toSch(x), y: flipYSch(y), rotation: ((rot || 0) % 360 + 360) % 360, color: null, fontFamily: null,
+          fontSize: fx.size || 5, fontWeight: fx.bold || null, italic: fx.italic || null,
           underline: null, strikeout: null, align: fx.align, value: val, fillColor: null,
           locked: false, zIndex: ticket
         }
@@ -263,7 +265,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const pts = extractWirePoints(node);
       if (pts.length < 2) continue;
       rec('POLY', shapeCommon(node, {
-        points: pts.map(p => ({ x: toMil(p[0]), y: flipY(p[1]) })),
+        points: pts.map(p => ({ x: toSch(p[0]), y: flipYSch(p[1]) })),
         closed: false, startShape: 'NONE', endShape: 'NONE'
       }));
     } else if (head === 'rectangle') {
@@ -271,7 +273,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const e = findSub(node, 'end');
       if (!s || !e) continue;
       rec('RECT', shapeCommon(node, {
-        dotX1: toMil(s[0]), dotY1: flipY(s[1]), dotX2: toMil(e[0]), dotY2: flipY(e[1]),
+        dotX1: toSch(s[0]), dotY1: flipYSch(s[1]), dotX2: toSch(e[0]), dotY2: flipYSch(e[1]),
         radiusX: 0, radiusY: 0, rotation: 0
       }));
     } else if (head === 'circle') {
@@ -279,14 +281,14 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const r = findSub(node, 'radius');
       if (!c || !r) continue;
       rec('CIRCLE', shapeCommon(node, {
-        centerX: toMil(c[0]), centerY: flipY(c[1]), radius: toMil(r[0])
+        centerX: toSch(c[0]), centerY: flipYSch(c[1]), radius: toSch(r[0])
       }));
     } else if (head === 'arc') {
       const a = require('./lib/kicad').extractArc(node);
       if (a.mx == null) continue;
-      const cx1 = toMil(a.x1), cy1 = flipY(a.y1);
-      const cxm = toMil(a.mx), cym = flipY(a.my);
-      const cx2 = toMil(a.x2), cy2 = flipY(a.y2);
+      const cx1 = toSch(a.x1), cy1 = flipYSch(a.y1);
+      const cxm = toSch(a.mx), cym = flipYSch(a.my);
+      const cx2 = toSch(a.x2), cy2 = flipYSch(a.y2);
       const c = circumcenter(cx1, cy1, cxm, cym, cx2, cy2);
       rec('ARC', shapeCommon(node, {
         startX: cx1, startY: cy1, referX: c.x, referY: c.y, endX: cx2, endY: cy2
@@ -295,7 +297,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const pts = extractWirePoints(node);
       if (pts.length < 4) continue;
       rec('BEZIER', shapeCommon(node, {
-        controls: pts.flatMap(p => [toMil(p[0]), flipY(p[1])])
+        controls: pts.flatMap(p => [toSch(p[0]), flipYSch(p[1])])
       }));
     } else if (head === 'image') {
       const [x, y] = findAtXY(node);
@@ -309,8 +311,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
         head: { type: 'OBJ', ticket, id: randId() },
         body: {
           partId: '', groupId: '', locked: false, zIndex: ticket,
-          fileName: 'image.png', startX: toMil(x), startY: flipY(y),
-          width: Math.round(200 * sx), height: Math.round(200 * sy),
+          fileName: 'image.png', startX: toSch(x), startY: flipYSch(y),
+          width: Math.round(20 * sx), height: Math.round(20 * sy),
           rotation: 0, isMirror: false,
           content: 'data:image/png;base64,' + dataArr[0]
         }
@@ -324,16 +326,19 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const [x, y, rot] = findAtXY(node);
       const props = collectProperties(node);
       const mirrors = findFlags(node, 'mirror');
+      // KiCad (mirror y) = left-right flip = eprj3 isMirror; (mirror x) = top-bottom
+      // flip = isMirror + 180°. Sheet angles are CCW-on-screen like eprj3 — no flip.
       let isMirror = mirrors.includes('y');
-      let rotation = flipRot(rot || 0);
+      let rotation = (((rot || 0) % 360) + 360) % 360;
       if (mirrors.includes('x')) { isMirror = true; rotation = (rotation + 180) % 360; }
       const compId = randId();
+      const compX = toSch(x), compY = flipYSch(y);
       ticket++;
       pageRecords.push({
         head: { type: 'COMPONENT', ticket, id: compId },
         body: {
           partId: lib.partId,
-          x: toMil(x), y: flipY(y), rotation, isMirror,
+          x: compX, y: compY, rotation, isMirror,
           attrs: {
             Footprints: '[]', Devices: '[]',
             DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
@@ -348,8 +353,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
       pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
       pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', 'gge' + (++ggeCounter)));
-      if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, toMil(x) + 10, flipY(y) - 10, 'LEFT_TOP'));
-      if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Value', props.Value, toMil(x) + 10, flipY(y) + 10, 'LEFT_BOTTOM'));
+      if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, compX, compY + 10, 'CENTER_BOTTOM'));
+      if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Value', props.Value, compX, compY - 10, 'CENTER_TOP'));
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
     }
@@ -378,9 +383,9 @@ function convertHierSheet(node, rec) {
   const size = findSub(node, 'size');
   const props = collectProperties(node);
   if (!at || !size) { warn('sheet without at/size'); return; }
-  const x = toMil(at[0]), y = flipY(at[1]);
-  const x2 = toMil(parseFloat(at[0]) + parseFloat(size[0]));
-  const y2 = flipY(parseFloat(at[1]) + parseFloat(size[1]));
+  const x = toSch(at[0]), y = flipYSch(at[1]);
+  const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0]));
+  const y2 = flipYSch(parseFloat(at[1]) + parseFloat(size[1]));
   rec('RECT', {
     partId: '', groupId: '', locked: false,
     dotX1: x, dotY1: y, dotX2: x2, dotY2: y2,
@@ -390,8 +395,8 @@ function convertHierSheet(node, rec) {
   const name = props['Sheet name'] || props['SheetName'] || '';
   if (name) {
     rec('TEXT', {
-      groupId: '', x: (x + x2) / 2, y: Math.max(y, y2) + 10, rotation: 0, color: null, fontFamily: null,
-      fontSize: 25, fontWeight: null, italic: null, underline: null, strikeout: null, align: 'CENTER_BOTTOM',
+      groupId: '', x: (x + x2) / 2, y: Math.max(y, y2) + 5, rotation: 0, color: null, fontFamily: null,
+      fontSize: 5, fontWeight: null, italic: null, underline: null, strikeout: null, align: 'CENTER_BOTTOM',
       value: name, fillColor: null, locked: false
     });
   }
@@ -401,8 +406,8 @@ function convertHierSheet(node, rec) {
       const atSub = findSub(it, 'at');
       if (!atSub) continue;
       rec('NETLABEL', {
-        x: toMil(atSub[0]), y: flipY(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
-        fontSize: 12, align: 'CENTER_MIDDLE', value: pinName, locked: false
+        x: toSch(atSub[0]), y: flipYSch(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
+        fontSize: 5, align: 'CENTER_MIDDLE', value: pinName, locked: false
       });
     }
   }
@@ -415,7 +420,7 @@ function textEffects(node) {
   const font = findSubNode(eff, 'font');
   if (font) {
     const size = findSub(font, 'size');
-    if (size) out.size = Math.max(5, Math.round(toMil(size[0])));
+    if (size) out.size = Math.max(1, Math.round(toSch(size[0]) * 100) / 100);
     out.bold = findFlags(font, 'bold').length ? true : null;
     out.italic = findFlags(font, 'italic').length ? true : null;
   }
@@ -432,7 +437,7 @@ function pageAttr(parentId, ticket, key, value, x, y, align) {
   return {
     head: { type: 'ATTR', ticket, id: randId() },
     body: {
-      x, y, rotation: 0, color: null, fontFamily: null, fontSize: 10,
+      x, y, rotation: 0, color: null, fontFamily: null, fontSize: 5,
       fontWeight: null, italic: null, underline: null, strikeout: null, align,
       value, keyVisible: false, valueVisible: true, key,
       fillColor: null, groupId: '', parentId, zIndex: ticket, locked: false

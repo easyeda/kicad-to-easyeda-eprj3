@@ -7,19 +7,33 @@
 
 const { randId } = require('./eprj3');
 
-const MM_TO_MIL = 39.3700787; // eprj3 stores positions in mil (1 mm = 39.37 mil)
+const MM_TO_MIL = 39.3700787; // eprj3 PCB stores positions in mil (1 mm = 39.37 mil)
+// eprj3 schematic unit = 0.254 mm (A4 page = 1170 units = 297 mm), i.e. 10 mil.
+const MM_TO_SCH = 1 / 0.254;
 
 function kicadToEprj3(val) {
-  // KiCad positions are in mm; eprj3 uses mil.
+  // KiCad positions are in mm; eprj3 PCB uses mil.
   return val * MM_TO_MIL;
 }
 
-// KiCad sheets/boards/symbols are Y-down; eprj3 canvases are Y-up.
+// KiCad sheets/boards are Y-down; the eprj3 PCB canvas is Y-up.
 function flipY(val) {
   return -kicadToEprj3(val);
 }
 
-// Mirrored rotation sense caused by the Y flip.
+// KiCad symbol libraries are Y-up, same as the eprj3 schematic canvas, but in
+// 0.254 mm units — only the scale differs.
+function kicadToSchUnit(val) {
+  return val * MM_TO_SCH;
+}
+
+// KiCad sheet coordinates (Y-down) → eprj3 schematic page (Y-up, 0.254 mm units).
+function flipYSch(val) {
+  return -kicadToSchUnit(val);
+}
+
+// Mirrored rotation sense caused by a Y flip (PCB path only; schematic angles
+// pass through unchanged because both KiCad and eprj3 measure CCW on screen).
 function flipRot(deg) {
   const r = ((360 - (parseFloat(deg) || 0)) % 360 + 360) % 360;
   return r;
@@ -31,8 +45,9 @@ const STROKE_STYLE_MAP = {
 };
 // KiCad fill: none → no fill; outline/background → solid fill with default color
 function mapStroke(kicadStroke) {
+  // schematic strokes are in 0.254 mm units; keep sub-unit widths (KiCad 0.15 mm ≈ 0.59)
   const w = kicadStroke && kicadStroke.width != null && isFinite(kicadStroke.width)
-    ? Math.max(1, kicadToEprj3(kicadStroke.width)) : null;
+    ? Math.max(0.5, Math.round(kicadToSchUnit(kicadStroke.width) * 100) / 100) : null;
   const type = kicadStroke && kicadStroke.type && kicadStroke.type in STROKE_STYLE_MAP
     ? STROKE_STYLE_MAP[kicadStroke.type] : 'SOLID'; // KiCad "default" → solid
   return { strokeWidth: w, strokeStyle: type };
@@ -74,6 +89,8 @@ const PIN_ELECTRIC_MAP = {
   passive: 0, free: 0, unspecified: 0, power_in: 0, power_out: 0,
   open_collector: 2, open_emitter: 2, no_connect: 0
 };
+// electric → "Pin Type" ATTR value, as written by the official app exports
+const PIN_TYPE_NAME = { 0: 'Undefined', 1: 'IN', 2: 'OUT', 3: 'IO' };
 // KiCad pin graphic style → eprj3 pinShape string enum (e-pin-shape)
 const PIN_SHAPE_MAP = {
   line: 'NONE', inverted: 'INVERTED', clock: 'CLOCK', inverted_clock: 'INVERTED_CLOCK',
@@ -112,8 +129,13 @@ function buildSymbolRecords(kicadSym, opts = {}) {
   const records = [];
   let ticket = 1;
 
+  // KiCad lib coordinates are Y-up like the eprj3 symbol canvas — no flip, only
+  // mm → 0.254 mm units.
   const bboxMm = collectBboxMm(kicadSym);
-  const BBOX = [flipY(bboxMm[2]), flipY(bboxMm[3]), flipY(bboxMm[0]), flipY(bboxMm[1])];
+  const BBOX = [
+    kicadToSchUnit(bboxMm[0]), kicadToSchUnit(bboxMm[1]),
+    kicadToSchUnit(bboxMm[2]), kicadToSchUnit(bboxMm[3])
+  ];
 
   records.push({
     head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
@@ -167,8 +189,8 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         head: { type: 'RECT', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          dotX1: kicadToEprj3(sh.x1), dotY1: flipY(sh.y1),
-          dotX2: kicadToEprj3(sh.x2), dotY2: flipY(sh.y2),
+          dotX1: kicadToSchUnit(sh.x1), dotY1: kicadToSchUnit(sh.y1),
+          dotX2: kicadToSchUnit(sh.x2), dotY2: kicadToSchUnit(sh.y2),
           radiusX: 0, radiusY: 0, rotation: 0
         }
       });
@@ -177,31 +199,31 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          points: sh.pts.map(p => ({ x: kicadToEprj3(p.x), y: flipY(p.y) })),
+          points: sh.pts.map(p => ({ x: kicadToSchUnit(p.x), y: kicadToSchUnit(p.y) })),
           closed: false, startShape: 'NONE', endShape: 'NONE'
         }
       });
     } else if (sh.type === 'CIRCLE' && sh.r != null) {
       records.push({
         head: { type: 'CIRCLE', ticket, id: 'e' + randId() },
-        body: { ...common, centerX: kicadToEprj3(sh.cx), centerY: flipY(sh.cy), radius: kicadToEprj3(sh.r) }
+        body: { ...common, centerX: kicadToSchUnit(sh.cx), centerY: kicadToSchUnit(sh.cy), radius: kicadToSchUnit(sh.r) }
       });
     } else if (sh.type === 'ARC' && sh.mx != null) {
-      // KiCad arc: start/mid/end (Y-down). eprj3 ARC: start/refer(center)/end.
+      // KiCad arc: start/mid/end. eprj3 ARC: start/refer(center)/end.
       const c = circumcenter(sh.x1, sh.y1, sh.mx, sh.my, sh.x2, sh.y2);
       records.push({
         head: { type: 'ARC', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          startX: kicadToEprj3(sh.x1), startY: flipY(sh.y1),
-          referX: kicadToEprj3(c.x), referY: flipY(c.y),
-          endX: kicadToEprj3(sh.x2), endY: flipY(sh.y2)
+          startX: kicadToSchUnit(sh.x1), startY: kicadToSchUnit(sh.y1),
+          referX: kicadToSchUnit(c.x), referY: kicadToSchUnit(c.y),
+          endX: kicadToSchUnit(sh.x2), endY: kicadToSchUnit(sh.y2)
         }
       });
     } else if (sh.type === 'BEZIER' && sh.pts && sh.pts.length >= 4) {
       records.push({
         head: { type: 'BEZIER', ticket, id: 'e' + randId() },
-        body: { ...common, controls: sh.pts.flatMap(p => [kicadToEprj3(p.x), flipY(p.y)]) }
+        body: { ...common, controls: sh.pts.flatMap(p => [kicadToSchUnit(p.x), kicadToSchUnit(p.y)]) }
       });
     }
   }
@@ -209,21 +231,29 @@ function buildSymbolRecords(kicadSym, opts = {}) {
   for (const pin of kicadSym.pins) {
     const pinId = 'e' + randId();
     ticket++;
+    const rotation = ((pin.rotation || 0) % 360 + 360) % 360;
     records.push({
       head: { type: 'PIN', ticket, id: pinId },
       body: {
         partId, groupId: '', locked: false, zIndex: ticket,
         display: true,
         electric: PIN_ELECTRIC_MAP[pin.electric] != null ? PIN_ELECTRIC_MAP[pin.electric] : 0,
-        x: kicadToEprj3(pin.x), y: flipY(pin.y),
-        length: kicadToEprj3(pin.length || 5),
-        // rotation = direction from the connection end toward the body; the Y
-        // flip mirrors the angle sense.
-        rotation: flipRot(pin.rotation || 0),
-        color: '#000000', pinShape: PIN_SHAPE_MAP[pin.style] != null ? PIN_SHAPE_MAP[pin.style] : 'NONE'
+        x: kicadToSchUnit(pin.x), y: kicadToSchUnit(pin.y),
+        length: kicadToSchUnit(pin.length || 5),
+        // KiCad pin rotation = direction from the connection end toward the
+        // body, CCW on screen — identical semantics to the eprj3 PIN record.
+        rotation,
+        color: null, pinShape: PIN_SHAPE_MAP[pin.style] != null ? PIN_SHAPE_MAP[pin.style] : 'NONE'
       }
     });
-    const pinAttr = (key, value) => {
+    // Name/number visibility & anchoring follow the official app exports
+    // (eprj3-example): hidden key/value flags, x/y null, align per pin side.
+    const electric = PIN_ELECTRIC_MAP[pin.electric] != null ? PIN_ELECTRIC_MAP[pin.electric] : 0;
+    const sideAlign = rotation === 90 ? ['LEFT_MIDDLE', 'RIGHT_MIDDLE']
+      : rotation === 270 ? ['RIGHT_MIDDLE', 'LEFT_MIDDLE']
+        : rotation === 180 ? ['RIGHT_BOTTOM', 'LEFT_BOTTOM']
+          : ['LEFT_BOTTOM', 'RIGHT_BOTTOM'];
+    const pinAttr = (key, value, fontSize, align) => {
       ticket++;
       records.push({
         head: { type: 'ATTR', ticket, id: 'e' + randId() },
@@ -231,15 +261,16 @@ function buildSymbolRecords(kicadSym, opts = {}) {
           partId, groupId: '', locked: false, zIndex: ticket, parentId: pinId,
           key, value,
           keyVisible: false, valueVisible: false,
-          x: pin.x, y: flipY(pin.y), rotation: flipRot(pin.rotation || 0),
-          color: null, fillColor: null, fontFamily: null, fontSize: null,
-          strikeout: null, underline: null, italic: null, fontWeight: null, align: 'CENTER_MIDDLE'
+          x: null, y: null, rotation: 0,
+          color: null, fillColor: null, fontFamily: null, fontSize,
+          strikeout: false, underline: false, italic: false, fontWeight: false, align,
+          version: '2.0'
         }
       });
     };
-    pinAttr('Pin Name', pin.name || pin.number || '');
-    pinAttr('Pin Number', pin.number || '');
-    pinAttr('Pin Type', 'Undefined');
+    pinAttr('Pin Name', pin.name || pin.number || '', 9.72222, sideAlign[0]);
+    pinAttr('Pin Number', pin.number || '', 9.72222, sideAlign[1]);
+    pinAttr('Pin Type', PIN_TYPE_NAME[electric] || 'Undefined', 6.75, 'LEFT_BOTTOM');
   }
 
   return { records, partId };
@@ -429,6 +460,6 @@ function buildFootprintRecords(kicadFp, opts = {}) {
 
 module.exports = {
   buildSymbolRecords, buildFootprintRecords, footprintPadRecord,
-  kicadToEprj3, flipY, flipRot, circumcenter, arcSweep,
-  mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_SHAPE_MAP
+  kicadToEprj3, flipY, kicadToSchUnit, flipYSch, flipRot, circumcenter, arcSweep,
+  mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

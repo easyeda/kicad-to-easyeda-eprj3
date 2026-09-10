@@ -25,7 +25,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPTS = path.join(ROOT, 'scripts');
 const { readRecords } = require(path.join(SCRIPTS, 'lib', 'eprj3'));
-const { kicadToEprj3 } = require(path.join(SCRIPTS, 'lib', 'kicad-to-eprj3'));
+const { kicadToEprj3, kicadToSchUnit, flipYSch } = require(path.join(SCRIPTS, 'lib', 'kicad-to-eprj3'));
 
 let failures = 0;
 let checks = 0;
@@ -192,6 +192,18 @@ function main() {
     assert(pageAttrs.every(r => r.body.parentId === comp.head.id), 'every page ATTR.parentId == COMPONENT id');
     assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup), 'wires become LINE records with a lineGroup');
     assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.startY < 0), 'schematic Y axis is flipped to Y-up');
+    // symbol geometry: sch units (0.254 mm), no Y flip (KiCad lib is Y-up), identity pin rotation
+    const pinDown = symDocs[0].records.filter(r => r.type === 'PIN');
+    const pinAtTop = pinDown.find(p => Math.abs(p.body.y - kicadToSchUnit(3.81)) < 0.01);
+    assert(!!pinAtTop && pinAtTop.body.rotation === 270 && Math.abs(pinAtTop.body.length - kicadToSchUnit(1.27)) < 0.01,
+      'PIN keeps KiCad lib orientation (Y-up, rotation not mirrored) in 0.254 mm units',
+      JSON.stringify(pinDown.map(p => ({ y: p.body.y, rot: p.body.rotation }))));
+    const pinTypeAttr = symDocs[0].records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Type');
+    assert(!!pinTypeAttr && pinTypeAttr.body.value === 'Undefined' && pinTypeAttr.body.x === null,
+      'Pin Type ATTR carries the electric type with null position (official shape)');
+    const compAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator');
+    assert(compAttr && Math.abs(compAttr.body.y - (flipYSch(50) + 10)) < 0.01,
+      'Designator ATTR sits above the component in sch units');
 
     // ---- pcb side ----
     const convPcb = readRecords(path.join(dst, 'pcb', 'PCB1.epcb2'));
@@ -233,15 +245,16 @@ function main() {
     assert(pageDoc.records.some(r => r.type === 'BUS'), 'bus becomes a BUS record');
     const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 'SOLID');
     assert(!!junction && junction.body.radius > 0, 'junction becomes a filled CIRCLE dot');
-    const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 2);
+    const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 1);
     assert(ncLines.length === 2 && ncLines[0].body.lineGroup && ncLines[0].body.lineGroup === ncLines[1].body.lineGroup,
       'no_connect becomes two LINE records sharing a group id');
     assert(pageDoc.records.some(r => r.type === 'NETLABEL' && r.body.value === 'GLOB'), 'global_label becomes a NETLABEL');
     const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
-    assert(txt && Math.abs(txt.body.x - kicadToEprj3(40)) < 0.01 && txt.body.y < 0, 'text becomes a TEXT record in flipped mils');
-    const pageRect = pageDoc.records.find(r => r.type === 'RECT' && Math.abs(r.body.dotX1 - kicadToEprj3(50)) < 0.01);
+    assert(txt && Math.abs(txt.body.x - kicadToSchUnit(40)) < 0.01 && txt.body.y < 0 && txt.body.fontSize === 7.87,
+      'text becomes a TEXT record in flipped 0.254 mm units (2 mm font = 7.87 units)');
+    const pageRect = pageDoc.records.find(r => r.type === 'RECT' && Math.abs(r.body.dotX1 - kicadToSchUnit(50)) < 0.01);
     assert(!!pageRect, 'page rectangle becomes a RECT');
-    const pageCircle = pageDoc.records.find(r => r.type === 'CIRCLE' && Math.abs(r.body.radius - kicadToEprj3(2)) < 0.01);
+    const pageCircle = pageDoc.records.find(r => r.type === 'CIRCLE' && Math.abs(r.body.radius - kicadToSchUnit(2)) < 0.01);
     assert(!!pageCircle, 'page circle becomes a CIRCLE');
     const pageArc = pageDoc.records.find(r => r.type === 'ARC');
     assert(!!pageArc && pageArc.body.referX != null, 'page arc becomes an ARC with a reference center');
@@ -329,6 +342,9 @@ function main() {
 
     // ---- unit conversion ----
     assert(Math.abs(kicadToEprj3(1) - 39.3700787) < 1e-6, 'kicadToEprj3 converts mm to mil (39.37)');
+    assert(Math.abs(kicadToSchUnit(1) - 3.937007874015748) < 1e-9, 'kicadToSchUnit converts mm to 0.254 mm sch units');
+    assert(kicadToSchUnit(0.254) === 1 && Math.abs(kicadToSchUnit(297.18) - 1170) < 1e-6,
+      'one sch unit = 0.254 mm exactly (A4 page = 1170 units)');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
