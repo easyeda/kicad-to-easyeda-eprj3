@@ -139,7 +139,6 @@ class Project {
     fs.writeFileSync(p.indexFile, JSON.stringify(p.profile, null, 2));
     fs.mkdirSync(path.join(rootDir, 'sch'), { recursive: true });
     fs.mkdirSync(path.join(rootDir, 'pcb'), { recursive: true });
-    fs.mkdirSync(path.join(rootDir, 'panel'), { recursive: true });
     return p;
   }
 
@@ -172,7 +171,7 @@ class Project {
     const ecfgFile = path.join(dir, `${name}.ecfg`);
     if (!fs.existsSync(ecfgFile)) {
       writeRecords(ecfgFile, [
-        { head: { type: 'DOCHEAD' }, body: { docType: 'SCH', client: 'kicad-to-easyeda-eprj3', uuid: sch.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
+        { head: { type: 'DOCHEAD' }, body: { docType: 'SCH', client: '6b69636164326570', uuid: sch.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '4.1.36', user: {} } },
         { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, source: '', board: sch.board, zIndex: null } }
       ]);
     }
@@ -277,7 +276,7 @@ class Project {
 //   .ecfg      DOCHEAD uuid == profile.schematics uuid
 function sheetDocRecords(sch, sheet) {
   return [
-    { head: { type: 'DOCHEAD' }, body: { docType: 'SCH_PAGE', client: 'kicad-to-easyeda-eprj3', uuid: sheet.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
+    { head: { type: 'DOCHEAD' }, body: { docType: 'SCH_PAGE', client: '6b69636164326570', uuid: sheet.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '4.1.36', user: {} } },
     { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: sheet.title, schematic: sch.uuid, source: '', zIndex: sheet.zIndex } },
     { head: { type: 'CANVAS', ticket: 2, id: 'CANVAS' }, body: { originX: 0, originY: 0 } }
   ];
@@ -339,7 +338,7 @@ function pcbDocRecords(pcb) {
   const layerRecords = pcbLayerRecords();
   const nextTicket = 3 + layerRecords.length;
   return [
-    { head: { type: 'DOCHEAD' }, body: { docType: 'PCB', client: 'kicad-to-easyeda-eprj3', uuid: pcb.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } },
+    { head: { type: 'DOCHEAD' }, body: { docType: 'PCB', client: '6b69636164326570', uuid: pcb.uuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '4.1.36', user: {} } },
     { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, parent: '', source: '', board: pcb.board, zIndex: null } },
     { head: { type: 'CANVAS', ticket: 2, id: 'CANVAS' }, body: { originX: 0, originY: 0, unit: 'mil', gridXSize: 5, gridYSize: 5, snapXSize: 5, snapYSize: 5, altSnapXSize: 1, altSnapYSize: 1, gridType: 'GRID', multiGridType: 'NONE', multiGridRatio: 5, highlightValue: 0.5, layerBrightness: 'NORMAL' } },
     ...layerRecords,

@@ -90,10 +90,39 @@ function loosen(type, body) {
     if (b.hole == null) b.hole = { holeType: 'ROUND', width: 0, height: 0 }; // "null 表示无孔" but type forbids null
     if (b.connectMode == null) b.connectMode = 'DIVERGENCE';
   }
+  if (type === 'PAD_NET') {
+    // the real app keeps componentId/padNum/padId in the head id array and
+    // writes padLen/propagationDelay as null; the schema wants body fields/numbers
+    if (b.componentId == null) b.componentId = '';
+    if (b.padNum == null) b.padNum = '';
+    if (b.padId == null) b.padId = '';
+    if (b.padLen == null) b.padLen = 0;
+    if (b.propagationDelay == null) b.propagationDelay = 0;
+  }
   if (type === 'POUR' && b.pourType && typeof b.pourType.pourType === 'string') {
     b.pourType = { pourType: {} };                             // schema wants an object where the app writes 'SOLID'
   }
   if (type === 'PIN' && b.color == null) b.color = '';         // official exports write null; schema only allows ""
+  if (type === 'WIRE' || type === 'BUS') {
+    // real exports write the wire body as {zIndex} only; the id lives in the head
+    if (b.groupId == null) b.groupId = '';
+    if (b.locked == null) b.locked = false;
+  }
+  if (type === 'ATTR') {
+    // real exports write null for keyVisible/valueVisible/align on binding and
+    // power-flag attrs; schema types them as boolean/string
+    if (b.keyVisible == null) b.keyVisible = false;
+    if (b.valueVisible == null) b.valueVisible = false;
+    if (b.align == null) b.align = 'LEFT_BOTTOM';
+    if (b.rotation == null) b.rotation = 0;
+    // real exports omit the four text-style booleans and write null values on
+    // system attrs; schema requires the keys and a string value
+    if (b.strikeout == null) b.strikeout = null;
+    if (b.underline == null) b.underline = null;
+    if (b.italic == null) b.italic = null;
+    if (b.fontWeight == null) b.fontWeight = null;
+    if (b.value == null) b.value = '';
+  }
   return b;
 }
 

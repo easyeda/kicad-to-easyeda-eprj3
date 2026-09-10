@@ -21,15 +21,22 @@ function flipY(val) {
   return -kicadToEprj3(val);
 }
 
-// KiCad symbol libraries are Y-up, same as the eprj3 schematic canvas, but in
-// 0.254 mm units — only the scale differs.
+// KiCad symbol libraries are Y-up; eprj3 schematic records are Y-DOWN in
+// 0.254 mm units — so y is negated, x only rescaled.
 function kicadToSchUnit(val) {
   return val * MM_TO_SCH;
 }
-
-// KiCad sheet coordinates (Y-down) → eprj3 schematic page (Y-up, 0.254 mm units).
-function flipYSch(val) {
+function schX(val) {
+  return kicadToSchUnit(val);
+}
+function schY(val) {
   return -kicadToSchUnit(val);
+}
+
+// KiCad sheet coordinates (Y-down, origin top-left) → eprj3 schematic page
+// (Y-down, origin bottom-left of the frame): y_page = sch(ky) − pageHeight.
+function flipYSch(val, pageHeight) {
+  return kicadToSchUnit(val) - (pageHeight || 825);
 }
 
 // Mirrored rotation sense caused by a Y flip (PCB path only; schematic angles
@@ -124,18 +131,36 @@ function collectBboxMm(kicadSym) {
   return [minX, minY, maxX, maxY];
 }
 
+// Farthest graphic extent from a pin origin along the pin direction — used for
+// power flags whose KiCad pin length is 0 (record space, Y-down).
+function pinGraphicExtent(kicadSym, pin) {
+  const rad = (pin.rotation || 0) * Math.PI / 180;
+  const dir = { x: Math.cos(rad), y: -Math.sin(rad) }; // eprj3 record direction
+  let max = 0;
+  const proj = (x, y) => ((schX(x) - schX(pin.x)) * dir.x + (schY(y) - schY(pin.y)) * dir.y);
+  for (const sh of kicadSym.shapes || []) {
+    const pts = [];
+    if (sh.type === 'RECT') pts.push([sh.x1, sh.y1], [sh.x2, sh.y2]);
+    else if (sh.type === 'POLY' || sh.type === 'BEZIER') for (const p of sh.pts || []) pts.push([p.x, p.y]);
+    else if (sh.type === 'CIRCLE' && sh.r != null) pts.push([sh.cx, sh.cy]);
+    else if (sh.type === 'ARC') pts.push([sh.x1, sh.y1], [sh.mx, sh.my], [sh.x2, sh.y2]);
+    for (const [x, y] of pts) {
+      const d = proj(x, y);
+      if (d > max) max = d;
+    }
+  }
+  return max;
+}
+
 function buildSymbolRecords(kicadSym, opts = {}) {
   const partId = opts.partId || ('pid' + randId());
   const records = [];
   let ticket = 1;
 
-  // KiCad lib coordinates are Y-up like the eprj3 symbol canvas — no flip, only
-  // mm → 0.254 mm units.
+  // KiCad lib is Y-up; eprj3 symbol records are Y-down → negate y.
+  // Official PART BBOX stores the record-space extent as [minX, −minY, maxX, −maxY].
   const bboxMm = collectBboxMm(kicadSym);
-  const BBOX = [
-    kicadToSchUnit(bboxMm[0]), kicadToSchUnit(bboxMm[1]),
-    kicadToSchUnit(bboxMm[2]), kicadToSchUnit(bboxMm[3])
-  ];
+  const BBOX = [schX(bboxMm[0]), -schY(bboxMm[3]), schX(bboxMm[2]), -schY(bboxMm[1])];
 
   records.push({
     head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
@@ -163,16 +188,26 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     libAttr('Name', (kicadSym.properties && kicadSym.properties.Value) || kicadSym.name || '');
     libAttr('Designator', ref.endsWith('?') ? ref : ref + '?');
   } else {
-    records.push({
-      head: { type: 'ATTR', ticket: ++ticket, id: 'e' + randId() },
-      body: {
-        partId, groupId: '', locked: false, zIndex: ticket, parentId: '',
-        key: 'Symbol', value: kicadSym.name || '',
-        keyVisible: false, valueVisible: false,
-        x: 0, y: 0, rotation: 0, color: null, fillColor: null, fontFamily: null,
-        fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null, align: 'CENTER_MIDDLE'
-      }
-    });
+    // Doc-level Device/Symbol attrs, as written by the official app exports.
+    const docAttr = (key, value) => {
+      records.push({
+        head: { type: 'ATTR', ticket: ++ticket, id: 'e' + randId() },
+        body: {
+          partId, groupId: '', locked: false, zIndex: ticket, parentId: '',
+          key, value,
+          keyVisible: false, valueVisible: false,
+          x: null, y: null, rotation: 0, color: '#000080', fillColor: null, fontFamily: null,
+          fontSize: null, strikeout: null, underline: null, italic: null, fontWeight: null,
+          align: 'LEFT_BOTTOM', version: '2.0'
+        }
+      });
+    };
+    docAttr('Device', '');
+    docAttr('Symbol', kicadSym.name || '');
+    if (opts.isPower) {
+      docAttr('Name', opts.netName || '');
+      docAttr('Global Net Name', opts.netName || '');
+    }
   }
 
   for (const sh of kicadSym.shapes) {
@@ -189,8 +224,8 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         head: { type: 'RECT', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          dotX1: kicadToSchUnit(sh.x1), dotY1: kicadToSchUnit(sh.y1),
-          dotX2: kicadToSchUnit(sh.x2), dotY2: kicadToSchUnit(sh.y2),
+          dotX1: schX(sh.x1), dotY1: schY(sh.y1),
+          dotX2: schX(sh.x2), dotY2: schY(sh.y2),
           radiusX: 0, radiusY: 0, rotation: 0
         }
       });
@@ -199,31 +234,32 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          points: sh.pts.map(p => ({ x: kicadToSchUnit(p.x), y: kicadToSchUnit(p.y) })),
+          points: sh.pts.map(p => ({ x: schX(p.x), y: schY(p.y) })),
           closed: false, startShape: 'NONE', endShape: 'NONE'
         }
       });
     } else if (sh.type === 'CIRCLE' && sh.r != null) {
       records.push({
         head: { type: 'CIRCLE', ticket, id: 'e' + randId() },
-        body: { ...common, centerX: kicadToSchUnit(sh.cx), centerY: kicadToSchUnit(sh.cy), radius: kicadToSchUnit(sh.r) }
+        body: { ...common, centerX: schX(sh.cx), centerY: schY(sh.cy), radius: schX(sh.r) }
       });
     } else if (sh.type === 'ARC' && sh.mx != null) {
       // KiCad arc: start/mid/end. eprj3 ARC: start/refer(center)/end.
-      const c = circumcenter(sh.x1, sh.y1, sh.mx, sh.my, sh.x2, sh.y2);
+      // Mirror the three points into record space, then recompute the center.
+      const c = circumcenter(schX(sh.x1), schY(sh.y1), schX(sh.mx), schY(sh.my), schX(sh.x2), schY(sh.y2));
       records.push({
         head: { type: 'ARC', ticket, id: 'e' + randId() },
         body: {
           ...common,
-          startX: kicadToSchUnit(sh.x1), startY: kicadToSchUnit(sh.y1),
-          referX: kicadToSchUnit(c.x), referY: kicadToSchUnit(c.y),
-          endX: kicadToSchUnit(sh.x2), endY: kicadToSchUnit(sh.y2)
+          startX: schX(sh.x1), startY: schY(sh.y1),
+          referX: c.x, referY: c.y,
+          endX: schX(sh.x2), endY: schY(sh.y2)
         }
       });
     } else if (sh.type === 'BEZIER' && sh.pts && sh.pts.length >= 4) {
       records.push({
         head: { type: 'BEZIER', ticket, id: 'e' + randId() },
-        body: { ...common, controls: sh.pts.flatMap(p => [kicadToSchUnit(p.x), kicadToSchUnit(p.y)]) }
+        body: { ...common, controls: sh.pts.flatMap(p => [schX(p.x), schY(p.y)]) }
       });
     }
   }
@@ -232,48 +268,103 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     const pinId = 'e' + randId();
     ticket++;
     const rotation = ((pin.rotation || 0) % 360 + 360) % 360;
+    // Power flags carry length 0 in KiCad (wire meets the graphics at the pin
+    // origin); stretch the pin to the farthest graphic so the wire lands on it.
+    const graphicExtent = opts.isPower ? pinGraphicExtent(kicadSym, pin) : 0;
+    const length = pin.length > 0 ? schX(pin.length) : (graphicExtent > 0 ? graphicExtent : schX(2.54));
+    const pinName = pin.name && pin.name !== '~' ? pin.name : (opts.isPower ? 'Pin' + (pin.number || '1') : '');
     records.push({
       head: { type: 'PIN', ticket, id: pinId },
       body: {
         partId, groupId: '', locked: false, zIndex: ticket,
         display: true,
-        electric: PIN_ELECTRIC_MAP[pin.electric] != null ? PIN_ELECTRIC_MAP[pin.electric] : 0,
-        x: kicadToSchUnit(pin.x), y: kicadToSchUnit(pin.y),
-        length: kicadToSchUnit(pin.length || 5),
-        // KiCad pin rotation = direction from the connection end toward the
-        // body, CCW on screen — identical semantics to the eprj3 PIN record.
+        x: schX(pin.x), y: schY(pin.y),
+        length,
+        // Both spaces are Y-down after the lib flip: KiCad measures the pin
+        // direction CCW on screen, eprj3 does the same — rotation passes through.
         rotation,
         color: null, pinShape: PIN_SHAPE_MAP[pin.style] != null ? PIN_SHAPE_MAP[pin.style] : 'NONE'
       }
     });
-    // Name/number visibility & anchoring follow the official app exports
-    // (eprj3-example): hidden key/value flags, x/y null, align per pin side.
+    // Pin Name/Number attrs follow the app convention: valueVisible controls
+    // display; the position is explicit (body end + 3 for the name, 5 back
+    // along the pin for the number — matches real displayed-pin exports) so a
+    // manual "show" in the client lands at the KiCad spot. Vertical pins keep
+    // the text rotated 90 like real exports; align flips for 180/270.
+    const rad = rotation * Math.PI / 180;
+    const dir = { x: Math.cos(rad), y: -Math.sin(rad) };
+    const endX = schX(pin.x) + dir.x * length, endY = schY(pin.y) + dir.y * length;
+    const r2 = v => Math.round(v * 100) / 100;
+    const vertical = rotation === 90 || rotation === 270;
+    const textRotation = vertical ? 90 : 0;
+    const nameAlign = (rotation === 180 || rotation === 270) ? 'RIGHT_MIDDLE' : 'LEFT_MIDDLE';
+    const numAlign = (rotation === 180 || rotation === 270) ? 'LEFT_BOTTOM' : 'RIGHT_BOTTOM';
+    const nameVisible = !opts.isPower && !kicadSym.hidePinNames && !pin.nameHide && !!pinName;
+    const numberVisible = !opts.isPower && !kicadSym.hidePinNumbers && !pin.numberHide && !!pin.number;
+    const numOff = Math.min(5, length / 2);
     const electric = PIN_ELECTRIC_MAP[pin.electric] != null ? PIN_ELECTRIC_MAP[pin.electric] : 0;
-    const sideAlign = rotation === 90 ? ['LEFT_MIDDLE', 'RIGHT_MIDDLE']
-      : rotation === 270 ? ['RIGHT_MIDDLE', 'LEFT_MIDDLE']
-        : rotation === 180 ? ['RIGHT_BOTTOM', 'LEFT_BOTTOM']
-          : ['LEFT_BOTTOM', 'RIGHT_BOTTOM'];
-    const pinAttr = (key, value, fontSize, align) => {
+    const pinAttr = (key, value, o) => {
       ticket++;
       records.push({
         head: { type: 'ATTR', ticket, id: 'e' + randId() },
         body: {
           partId, groupId: '', locked: false, zIndex: ticket, parentId: pinId,
           key, value,
-          keyVisible: false, valueVisible: false,
-          x: null, y: null, rotation: 0,
-          color: null, fillColor: null, fontFamily: null, fontSize,
-          strikeout: false, underline: false, italic: false, fontWeight: false, align,
-          version: '2.0'
+          keyVisible: false, valueVisible: o.visible,
+          x: o.x, y: o.y, rotation: o.rotation,
+          color: null, fillColor: null, fontFamily: null, fontSize: o.fontSize,
+          strikeout: boolStyles ? false : null, underline: boolStyles ? false : null,
+          italic: boolStyles ? false : null, fontWeight: boolStyles ? false : null,
+          align: o.align, version: '2.0'
         }
       });
     };
-    pinAttr('Pin Name', pin.name || pin.number || '', 9.72222, sideAlign[0]);
-    pinAttr('Pin Number', pin.number || '', 9.72222, sideAlign[1]);
-    pinAttr('Pin Type', PIN_TYPE_NAME[electric] || 'Undefined', 6.75, 'LEFT_BOTTOM');
+    const boolStyles = true;
+    pinAttr('Pin Name', pinName, {
+      visible: nameVisible, x: r2(endX + dir.x * 3), y: r2(endY + dir.y * 3),
+      rotation: textRotation, align: nameAlign, fontSize: 9.72222
+    });
+    pinAttr('Pin Number', pin.number || '', {
+      visible: numberVisible, x: r2(endX - dir.x * numOff), y: r2(endY - dir.y * numOff),
+      rotation: textRotation, align: numAlign, fontSize: 9.72222
+    });
+    pinAttr('Pin Type', PIN_TYPE_NAME[electric] || 'Undefined', {
+      visible: false, x: null, y: null, rotation: 0, align: 'LEFT_BOTTOM', fontSize: null
+    });
   }
 
-  return { records, partId };
+  // Power flags: net name rendered at the far end of the graphics from the pin
+  // origin (official VCC/GND docs place Name/Global Net Name there).
+  let nameOff = null;
+  if (opts.isPower && opts.netName) {
+    const pin = (kicadSym.pins || [])[0];
+    if (pin) {
+      const ext = pinGraphicExtent(kicadSym, pin) || schX(2.54);
+      const rad = (pin.rotation || 0) * Math.PI / 180;
+      const dir = { x: Math.cos(rad), y: -Math.sin(rad) };
+      const px = schX(pin.x) + dir.x * ext, py = schY(pin.y) + dir.y * ext;
+      const attr = (key, vv) => {
+        ticket++;
+        records.push({
+          head: { type: 'ATTR', ticket, id: 'e' + randId() },
+          body: {
+            partId, groupId: '', locked: false, zIndex: ticket, parentId: '',
+            key, value: opts.netName,
+            keyVisible: null, valueVisible: vv,
+            x: Math.round(px * 100) / 100, y: Math.round(py * 100) / 100, rotation: 0,
+            color: null, fillColor: null, fontFamily: null, fontSize: null,
+            strikeout: null, underline: null, italic: null, fontWeight: null,
+            align: dir.y < 0 ? 'CENTER_BOTTOM' : 'CENTER_TOP', version: '2.0'
+          }
+        });
+      };
+      attr('Name', true);
+      attr('Global Net Name', false);
+      nameOff = { x: Math.round(px * 100) / 100, y: Math.round(py * 100) / 100, align: dir.y < 0 ? 'CENTER_BOTTOM' : 'CENTER_TOP' };
+    }
+  }
+
+  return { records, partId, nameOff };
 }
 
 const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'RECT', rect: 'RECT', custom: 'RECT', trapezoid: 'RECT' };
@@ -460,6 +551,6 @@ function buildFootprintRecords(kicadFp, opts = {}) {
 
 module.exports = {
   buildSymbolRecords, buildFootprintRecords, footprintPadRecord,
-  kicadToEprj3, flipY, kicadToSchUnit, flipYSch, flipRot, circumcenter, arcSweep,
+  kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, flipRot, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

@@ -84,7 +84,7 @@ function extractArc(node) {
 }
 
 function nodeSymbol(node) {
-  const out = { name: '', properties: {}, pins: [], shapes: [] };
+  const out = { name: '', properties: {}, pins: [], shapes: [], hidePinNumbers: false, hidePinNames: false };
   if (!Array.isArray(node) || !node.length || node[0].v !== 'symbol') return out;
   out.name = node[1]?.v || '';
   for (let i = 2; i < node.length; i++) {
@@ -96,7 +96,16 @@ function nodeSymbol(node) {
       const sub = nodeSymbol(it);
       out.pins.push(...sub.pins);
       out.shapes.push(...sub.shapes);
+      if (sub.hidePinNumbers) out.hidePinNumbers = true;
+      if (sub.hidePinNames) out.hidePinNames = true;
       if (!out.name && sub.name) out.name = sub.name;
+    } else if (head === 'pin_numbers') {
+      // (pin_numbers (hide yes)) or (pin_numbers hide)
+      out.hidePinNumbers = it.some(x => !Array.isArray(x) && x.v === 'hide')
+        || it.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
+    } else if (head === 'pin_names') {
+      out.hidePinNames = it.some(x => !Array.isArray(x) && x.v === 'hide')
+        || it.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
     } else if (head === 'property') {
       out.properties[it[1]?.v] = it[2]?.v;
     } else if (head === 'pin') {
@@ -105,8 +114,14 @@ function nodeSymbol(node) {
       for (let j = 1; j < it.length; j++) {
         const sub = it[j];
         if (!Array.isArray(sub) || !sub.length) continue;
-        if (sub[0].v === 'name') pin.name = sub[1]?.v;
-        else if (sub[0].v === 'number') pin.number = sub[1]?.v;
+        if (sub[0].v === 'name') {
+          pin.name = sub[1]?.v;
+          pin.nameHide = sub.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
+        }
+        else if (sub[0].v === 'number') {
+          pin.number = sub[1]?.v;
+          pin.numberHide = sub.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
+        }
         else if (sub[0].v === 'at') {
           pin.x = parseFloat(sub[1]?.v || 0);
           pin.y = parseFloat(sub[2]?.v || 0);

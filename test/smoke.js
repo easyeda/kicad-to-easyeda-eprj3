@@ -172,38 +172,56 @@ function main() {
     const pageMeta = pageDoc.records.find(r => r.type === 'META');
     assert(pageMeta && pageMeta.body.title === 'P1' && pageMeta.body.schematic === schEntry.uuid && pageMeta.body.zIndex === 1,
       'page META links title/schematic/zIndex per the official format');
-    assert(symDocs.length === 1 && devDocs.length === 1, '.esch2 embeds one SYMBOL and one DEVICE doc');
-    const symPart = symDocs[0] && symDocs[0].records.find(r => r.type === 'PART');
-    const comp = pageDoc.records.find(r => r.type === 'COMPONENT');
+    // frame docs (docType 20) + one SYMBOL/DEVICE pair per used lib_id
+    const symMeta = d => { const m = d.records.find(r => r.type === 'META'); return m ? m.body.docType : null; };
+    const partDocs = schDocs.filter(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 2);
+    const devDocsAll = schDocs.filter(d => d.head.body.docType === 'DEVICE');
+    const frameDoc = schDocs.find(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 20);
+    assert(frameDoc && partDocs.length === 1 && devDocsAll.length === 2,
+      '.esch2 embeds the A4 frame doc plus one SYMBOL and one DEVICE doc');
+    const symDoc = partDocs[0];
+    const symPart = symDoc.records.find(r => r.type === 'PART');
+    const comp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.partId === symPart.head.id);
     assert(comp && symPart && comp.body.partId === symPart.head.id, 'COMPONENT.partId references the embedded PART id');
     const devName = comp && JSON.parse(comp.body.attrs.DeviceName);
-    const devHead = devDocs[0] && devDocs[0].head;
-    assert(devName && devHead && devName.uuid === devHead.body.uuid, 'COMPONENT DeviceName uuid references the embedded DEVICE doc');
+    const devHead = devDocsAll[0] && devDocsAll[0].head;
+    assert(devName && devHead && devDocsAll.some(d => d.head.body.uuid === devName.uuid),
+      'COMPONENT DeviceName uuid references the embedded DEVICE doc');
     assert(typeof comp.body.zIndex === 'number', 'COMPONENT carries a numeric zIndex (official exports)');
     const symAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Symbol' && r.body.parentId === comp.head.id);
     const devAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Device' && r.body.parentId === comp.head.id);
-    assert(symAttr && symAttr.body.value === symDocs[0].head.body.uuid, 'COMPONENT Symbol ATTR references the SYMBOL doc uuid');
-    assert(devAttr && devAttr.body.value === devHead.body.uuid, 'COMPONENT Device ATTR references the DEVICE doc uuid');
+    assert(symAttr && symAttr.body.value === symDoc.head.body.uuid, 'COMPONENT Symbol ATTR references the SYMBOL doc uuid');
+    assert(devAttr && devAttr.body.value === devName.uuid, 'COMPONENT Device ATTR references the DEVICE doc uuid');
     assert(!(comp.body.id), 'COMPONENT body carries no duplicate id field');
     assert(convSch.some(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'R1')
-        && convSch.some(r => r.type === 'ATTR' && r.body.key === 'Value' && r.body.value === '10k'),
-      'convert-kicad emits Designator/Value ATTRs linked to the component');
+        && convSch.some(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.value === '10k'),
+      'convert-kicad emits Designator/Name ATTRs linked to the component');
+    const frameComp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.zIndex === null);
     const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
-    assert(pageAttrs.every(r => r.body.parentId === comp.head.id), 'every page ATTR.parentId == COMPONENT id');
-    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup), 'wires become LINE records with a lineGroup');
-    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.startY < 0), 'schematic Y axis is flipped to Y-up');
-    // symbol geometry: sch units (0.254 mm), no Y flip (KiCad lib is Y-up), identity pin rotation
-    const pinDown = symDocs[0].records.filter(r => r.type === 'PIN');
-    const pinAtTop = pinDown.find(p => Math.abs(p.body.y - kicadToSchUnit(3.81)) < 0.01);
-    assert(!!pinAtTop && pinAtTop.body.rotation === 270 && Math.abs(pinAtTop.body.length - kicadToSchUnit(1.27)) < 0.01,
-      'PIN keeps KiCad lib orientation (Y-up, rotation not mirrored) in 0.254 mm units',
+    assert(pageAttrs.every(r => r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
+      'every page ATTR.parentId == COMPONENT id (frame attrs belong to the frame COMPONENT)');
+    const wireRec = pageDoc.records.find(r => r.type === 'WIRE');
+    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup)
+      && wireRec && pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup === wireRec.head.id),
+      'WIRE head.id equals the LINE children lineGroup (official grouping)');
+    assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.startY < 0), 'page items map into the frame area (y <= 0)');
+    // symbol geometry: sch units, Y negated (KiCad lib Y-up → eprj3 records Y-down), identity pin rotation
+    const pinDown = symDoc.records.filter(r => r.type === 'PIN');
+    const pinAtTop = pinDown.find(p => Math.abs(p.body.y + kicadToSchUnit(3.81)) < 0.01);
+    assert(!!pinAtTop && pinAtTop.body.rotation === 270 && Math.abs(pinAtTop.body.length - kicadToSchUnit(1.27)) < 0.01
+      && pinAtTop.body.display === true,
+      'PIN flips y into the Y-down record space, keeps rotation, carries display:true',
       JSON.stringify(pinDown.map(p => ({ y: p.body.y, rot: p.body.rotation }))));
-    const pinTypeAttr = symDocs[0].records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Type');
+    const pinTypeAttr = symDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Type');
     assert(!!pinTypeAttr && pinTypeAttr.body.value === 'Undefined' && pinTypeAttr.body.x === null,
       'Pin Type ATTR carries the electric type with null position (official shape)');
-    const compAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator');
-    assert(compAttr && Math.abs(compAttr.body.y - (flipYSch(50) + 10)) < 0.01,
-      'Designator ATTR sits above the component in sch units');
+    const compAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.parentId === comp.head.id);
+    assert(compAttr && Math.abs(compAttr.body.y - (kicadToSchUnit(48) - 825)) < 0.01
+      && Math.abs(compAttr.body.x - kicadToSchUnit(30)) < 0.01,
+      'Designator ATTR sits at the KiCad property position on the shifted page frame');
+    const nameAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.parentId === comp.head.id);
+    assert(nameAttr && Math.abs(nameAttr.body.y - (kicadToSchUnit(52) - 825)) < 0.01,
+      'Name ATTR sits at the KiCad Value property position');
 
     // ---- pcb side ----
     const convPcb = readRecords(path.join(dst, 'pcb', 'PCB1.epcb2'));
@@ -235,7 +253,7 @@ function main() {
     const padNet = pcbDoc.records.find(r => r.type === 'PAD_NET');
     assert(padNet && padNet.head.id.includes(pcbComp.head.id) && padNet.head.id.includes('"1"') && padNet.body.padNet === 'GND',
       'PAD_NET links component pad to its net');
-    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === 'GND'), 'NET index record exists for used nets');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === JSON.stringify(['NET','GND'])), 'NET index record exists for used nets');
     const desig = pcbDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator');
     assert(desig && desig.body.value === 'R1' && desig.body.parentId === pcbComp.head.id, 'PCB Designator ATTR linked to COMPONENT');
 
@@ -281,7 +299,7 @@ function main() {
     assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1, 'zone becomes a POUR on F.Cu with its net');
     assert(poured && pour && poured.head.id === JSON.stringify(['POURED', pour.head.id]) && poured.body.pourFill.length >= 1,
       'filled_polygon becomes a POURED linked to the POUR');
-    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === 'VCC'), 'NET index record exists for zone net');
+    assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === JSON.stringify(['NET','VCC'])), 'NET index record exists for zone net');
 
     // ---- KiCad library dir → elibz2 package ----
     const libDir = path.join(tmp, 'libsrc');

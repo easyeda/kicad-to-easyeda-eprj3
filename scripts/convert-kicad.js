@@ -36,7 +36,7 @@ const {
   buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
   kicadToSchUnit, flipYSch, circumcenter, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
-const { Project, uuid, randId, writeRecords, sheetDocRecords, pcbDocRecords } = require('./lib/eprj3');
+const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
 const { parseArgs, printHelp, die } = require('./lib/utils');
 
 const schema = [
@@ -47,8 +47,23 @@ const schema = [
 function toMil(x) { return kicadToEprj3(parseFloat(x)); }
 function toSch(x) { return kicadToSchUnit(parseFloat(x)); }
 
+// eprj3 page height in sch units per KiCad paper size. A4 (1170×825) is
+// verified against official exports; the rest follow the same √2 A-series
+// proportions the EasyEDA template uses.
+const PAGE_HEIGHT_UNITS = { A4: 825, A3: 1167, A2: 1651, A1: 2334, A0: 3301, A: 550, B: 848, C: 1100, D: 1550, E: 2200 };
+// KiCad paper sizes in mm (page_info.cpp / standardPageSizes)
+const PAPER_SIZE_MM = {
+  A4: [297, 210], A3: [420, 297], A2: [594, 420], A1: [841, 594], A0: [1189, 841],
+  A: [279.4, 215.9], B: [431.8, 279.4], C: [558.8, 431.8], D: [863.6, 558.8], E: [1117.6, 863.6]
+};
+const MAGIC_PART_ID = 'pid8a0e77bacb214e'; // built-in power flags & sheet frame share this part id
+const FRAME_TEMPLATE = require('./lib/frame-a4.json'); // extracted from a real EasyEDA export
+// Static PCB editor config (PRIMITIVE/LAYER_PHYS/RULE*/SILK_OPTS/D3_ATTRIBUTE/
+// PREFERENCE/PANELIZE) — the client hangs without it; extracted from a real export.
+const PCB_CONFIG = require('./lib/pcb-config.json');
+
 function docHead(docType, docUuid) {
-  return { head: { type: 'DOCHEAD' }, body: { docType, client: uuid(16), uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '2.3.0', user: {} } };
+  return { head: { type: 'DOCHEAD' }, body: { docType, client: uuid(16), uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '4.1.36', user: {} } };
 }
 
 function metaRec(title, extra = {}) {
@@ -99,7 +114,7 @@ async function main() {
     const sch = project.ensureSchematic(`Schematic${schIdx++}`);
     const sheet = project.ensureSheet(sch, 'P1');
     const file = project.sheetFile(sheet);
-    convertSchematic(path.join(src, schFile), file, sch, sheet);
+    convertSchematic(path.join(src, schFile), file, sch, sheet, { projectName, pageCount: schs.length });
     project.save();
     console.log(`  sch: ${schFile} -> ${file}`);
   }
@@ -120,8 +135,44 @@ async function main() {
 
 // ---------------------------------------------------------------- schematic
 
-function convertSchematic(srcFile, dst, sch, sheet) {
+function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   const root = parseSex(fs.readFileSync(srcFile, 'utf8'));
+
+  const paper = findChildValue(root, 'paper') || 'A4';
+  const pageH = PAGE_HEIGHT_UNITS[paper] || PAGE_HEIGHT_UNITS.A4;
+  if (!PAGE_HEIGHT_UNITS[paper]) warn(`unknown paper "${paper}", using A4 page height`);
+  const pageCount = opts.pageCount || 1;
+
+  // KiCad title_block → the frame's title-block attrs (Company/Drawed/Version).
+  const titleBlock = root.slice(1).find(n => Array.isArray(n) && n[0].v === 'title_block');
+  const tb = {};
+  if (titleBlock) {
+    const company = findChildValue(titleBlock, 'company');
+    const date = findChildValue(titleBlock, 'date');
+    const rev = findChildValue(titleBlock, 'rev');
+    if (company) tb.Company = company;
+    if (date) tb.Drawed = date;
+    if (rev) tb.Version = rev;
+  }
+  // Values for the KiCad default title-block texts (%x format substitutions).
+  const kicadFrameFields = {
+    date: (titleBlock && findChildValue(titleBlock, 'date')) || '',
+    rev: (titleBlock && findChildValue(titleBlock, 'rev')) || '',
+    title: (titleBlock && findChildValue(titleBlock, 'title')) || '',
+    company: (titleBlock && findChildValue(titleBlock, 'company')) || '',
+    version: findChildValue(root, 'generator_version') || '',
+    file: srcFile.split(/[\\/]/).pop() || '',
+    comments: (() => {
+      const out = {};
+      if (titleBlock) for (const it of titleBlock.slice(1)) {
+        if (Array.isArray(it) && it[0].v === 'comment') out[it[1]?.v] = it[2]?.v || '';
+      }
+      return out;
+    })()
+  };
+  // KiCad sheet (Y-down, origin top-left) → eprj3 page (Y-down, origin at the
+  // frame's bottom-left corner): only a constant downward shift, no flip.
+  const pageY = v => flipYSch(v, pageH);
 
   // lib_symbols: top-level entries are keyed by full lib_id (e.g. "Device:R")
   const libs = {};
@@ -144,19 +195,33 @@ function convertSchematic(srcFile, dst, sch, sheet) {
     const libSym = libs[libId] || libs[shortName];
     const name = (libSym && libSym.name) || shortName;
     const isPower = /^power:/i.test(libId);
+    const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
     const symDocUuid = uuid(16);
     const devUuid = uuid(16);
-    const { records: symRecs, partId } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] });
+    const partId = isPower ? MAGIC_PART_ID : name + '.1';
+    const { records: symRecs, nameOff } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] }, {
+      partId,
+      partTitle: isPower ? '' : partId,
+      isPower,
+      netName
+    });
     libDocs.push(
       docHead('SYMBOL', symDocUuid),
-      metaRec(name, { docType: isPower ? 18 : 2 }),
+      isPower
+        ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
+        : metaRec(name, { docType: 2 }),
       ...symRecs
     );
     libDocs.push(
       docHead('DEVICE', devUuid),
-      metaRec(name, { images: [], attributes: { Symbol: symDocUuid } })
+      metaRec(name, {
+        images: [],
+        attributes: isPower
+          ? { Symbol: symDocUuid, 'Global Net Name': netName, Description: '', Name: netName, SymbolName: JSON.stringify({ name, uuid: symDocUuid, source: '' }) }
+          : { Symbol: symDocUuid, SymbolName: JSON.stringify({ name, uuid: symDocUuid, source: '' }) }
+      })
     );
-    usedLibs[libId] = { symDocUuid, devUuid, partId, name };
+    usedLibs[libId] = { symDocUuid, devUuid, partId, name, isPower, netName, nameOff };
     return usedLibs[libId];
   }
 
@@ -164,9 +229,9 @@ function convertSchematic(srcFile, dst, sch, sheet) {
   let ticket = 2;
   let busEntryOrder = 0;
   let componentZ = 0; // placed components need a real zIndex (official exports use 1,2,3…)
-  const rec = (type, body) => {
+  const rec = (type, body, id) => {
     ticket++;
-    pageRecords.push({ head: { type, ticket, id: randId() }, body: { ...body, zIndex: body.zIndex != null ? body.zIndex : ticket } });
+    pageRecords.push({ head: { type, ticket, id: id || randId() }, body: { ...body, zIndex: body.zIndex != null ? body.zIndex : ticket } });
   };
 
   for (const node of root.slice(1)) {
@@ -174,8 +239,11 @@ function convertSchematic(srcFile, dst, sch, sheet) {
     const head = node[0].v;
 
     if (head === 'wire' || head === 'bus') {
+      // Official structure: the WIRE/BUS head id IS the shared lineGroup id of
+      // its LINE children; the WIRE body carries only the zIndex.
       const groupId = randId();
-      rec(head === 'wire' ? 'WIRE' : 'BUS', head === 'wire' ? { groupId: '', locked: false } : { busEntry: {} });
+      ticket++;
+      pageRecords.push({ head: { type: head === 'wire' ? 'WIRE' : 'BUS', ticket, id: groupId }, body: { zIndex: ticket } });
       const pts = extractWirePoints(node);
       for (let i = 0; i < pts.length - 1; i++) {
         ticket++;
@@ -183,8 +251,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
           head: { type: 'LINE', ticket, id: randId() },
           body: {
             fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
-            startX: toSch(pts[i][0]), startY: flipYSch(pts[i][1]),
-            endX: toSch(pts[i + 1][0]), endY: flipYSch(pts[i + 1][1]),
+            startX: toSch(pts[i][0]), startY: pageY(pts[i][1]),
+            endX: toSch(pts[i + 1][0]), endY: pageY(pts[i + 1][1]),
             lineGroup: groupId
           }
         });
@@ -193,8 +261,8 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const at = findSub(node, 'at');
       const size = findSub(node, 'size');
       if (!at || !size) { warn('bus_entry without at/size'); continue; }
-      const x1 = toSch(at[0]), y1 = flipYSch(at[1]);
-      const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0])), y2 = flipYSch(parseFloat(at[1]) + parseFloat(size[1]));
+      const x1 = toSch(at[0]), y1 = pageY(at[1]);
+      const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0])), y2 = pageY(parseFloat(at[1]) + parseFloat(size[1]));
       const rot = Math.round((((Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI) % 360) + 360) % 360 / 90) * 90 % 360;
       ticket++;
       pageRecords.push({
@@ -207,12 +275,12 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const d = dArr && parseFloat(dArr[0]) > 0 ? parseFloat(dArr[0]) : 1.016; // KiCad diameter 0 = auto (default mm)
       rec('CIRCLE', {
         partId: '', groupId: '', locked: false,
-        centerX: toSch(x), centerY: flipYSch(y), radius: toSch(d) / 2,
+        centerX: toSch(x), centerY: pageY(y), radius: toSch(d) / 2,
         strokeColor: null, strokeStyle: 'SOLID', fillColor: '#000000', strokeWidth: null, fillStyle: 'SOLID'
       });
     } else if (head === 'no_connect') {
       const [x, y] = findAtXY(node);
-      const cx = toSch(x), cy = flipYSch(y);
+      const cx = toSch(x), cy = pageY(y);
       const h = 2.5; // half diagonal of the X marker (sch units = 0.635 mm)
       const ncGroup = randId();
       for (const [dx, dy] of [[h, h], [h, -h]]) {
@@ -227,7 +295,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       ticket++;
       pageRecords.push({
         head: { type: 'NETLABEL', ticket, id: randId() },
-        body: { x: toSch(x), y: flipYSch(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 5, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
+        body: { x: toSch(x), y: pageY(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 5, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
       });
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
@@ -240,10 +308,10 @@ function convertSchematic(srcFile, dst, sch, sheet) {
         const pts = findPtsSub(node);
         let x1, y1, x2, y2;
         if (pts && pts.length >= 4) {
-          x1 = toSch(pts[0][0]); y1 = flipYSch(pts[0][1]); x2 = toSch(pts[2][0]); y2 = flipYSch(pts[2][1]);
+          x1 = toSch(pts[0][0]); y1 = pageY(pts[0][1]); x2 = toSch(pts[2][0]); y2 = pageY(pts[2][1]);
         } else if (s && e) {
-          x1 = toSch(s[0]); y1 = flipYSch(s[1]); x2 = toSch(e[0]); y2 = flipYSch(e[1]);
-        } else { x1 = x2 = toSch(x); y1 = y2 = flipYSch(y); }
+          x1 = toSch(s[0]); y1 = pageY(s[1]); x2 = toSch(e[0]); y2 = pageY(e[1]);
+        } else { x1 = x2 = toSch(x); y1 = y2 = pageY(y); }
         rec('RECT', {
           partId: '', groupId: '', locked: false,
           dotX1: x1, dotY1: y1, dotX2: x2, dotY2: y2,
@@ -255,7 +323,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       pageRecords.push({
         head: { type: 'TEXT', ticket, id: randId() },
         body: {
-          groupId: '', x: toSch(x), y: flipYSch(y), rotation: ((rot || 0) % 360 + 360) % 360, color: null, fontFamily: null,
+          groupId: '', x: toSch(x), y: pageY(y), rotation: ((rot || 0) % 360 + 360) % 360, color: null, fontFamily: null,
           fontSize: fx.size || 5, fontWeight: fx.bold || null, italic: fx.italic || null,
           underline: null, strikeout: null, align: fx.align, value: val, fillColor: null,
           locked: false, zIndex: ticket
@@ -265,7 +333,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const pts = extractWirePoints(node);
       if (pts.length < 2) continue;
       rec('POLY', shapeCommon(node, {
-        points: pts.map(p => ({ x: toSch(p[0]), y: flipYSch(p[1]) })),
+        points: pts.map(p => ({ x: toSch(p[0]), y: pageY(p[1]) })),
         closed: false, startShape: 'NONE', endShape: 'NONE'
       }));
     } else if (head === 'rectangle') {
@@ -273,7 +341,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const e = findSub(node, 'end');
       if (!s || !e) continue;
       rec('RECT', shapeCommon(node, {
-        dotX1: toSch(s[0]), dotY1: flipYSch(s[1]), dotX2: toSch(e[0]), dotY2: flipYSch(e[1]),
+        dotX1: toSch(s[0]), dotY1: pageY(s[1]), dotX2: toSch(e[0]), dotY2: pageY(e[1]),
         radiusX: 0, radiusY: 0, rotation: 0
       }));
     } else if (head === 'circle') {
@@ -281,14 +349,14 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const r = findSub(node, 'radius');
       if (!c || !r) continue;
       rec('CIRCLE', shapeCommon(node, {
-        centerX: toSch(c[0]), centerY: flipYSch(c[1]), radius: toSch(r[0])
+        centerX: toSch(c[0]), centerY: pageY(c[1]), radius: toSch(r[0])
       }));
     } else if (head === 'arc') {
       const a = require('./lib/kicad').extractArc(node);
       if (a.mx == null) continue;
-      const cx1 = toSch(a.x1), cy1 = flipYSch(a.y1);
-      const cxm = toSch(a.mx), cym = flipYSch(a.my);
-      const cx2 = toSch(a.x2), cy2 = flipYSch(a.y2);
+      const cx1 = toSch(a.x1), cy1 = pageY(a.y1);
+      const cxm = toSch(a.mx), cym = pageY(a.my);
+      const cx2 = toSch(a.x2), cy2 = pageY(a.y2);
       const c = circumcenter(cx1, cy1, cxm, cym, cx2, cy2);
       rec('ARC', shapeCommon(node, {
         startX: cx1, startY: cy1, referX: c.x, referY: c.y, endX: cx2, endY: cy2
@@ -297,7 +365,7 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       const pts = extractWirePoints(node);
       if (pts.length < 4) continue;
       rec('BEZIER', shapeCommon(node, {
-        controls: pts.flatMap(p => [toSch(p[0]), flipYSch(p[1])])
+        controls: pts.flatMap(p => [toSch(p[0]), pageY(p[1])])
       }));
     } else if (head === 'image') {
       const [x, y] = findAtXY(node);
@@ -311,14 +379,14 @@ function convertSchematic(srcFile, dst, sch, sheet) {
         head: { type: 'OBJ', ticket, id: randId() },
         body: {
           partId: '', groupId: '', locked: false, zIndex: ticket,
-          fileName: 'image.png', startX: toSch(x), startY: flipYSch(y),
+          fileName: 'image.png', startX: toSch(x), startY: pageY(y),
           width: Math.round(20 * sx), height: Math.round(20 * sy),
           rotation: 0, isMirror: false,
           content: 'data:image/png;base64,' + dataArr[0]
         }
       });
     } else if (head === 'sheet') {
-      convertHierSheet(node, rec);
+      convertHierSheet(node, rec, pageY);
     } else if (head === 'symbol') {
       const libId = findChildValue(node, 'lib_id');
       if (!libId) continue;
@@ -332,35 +400,196 @@ function convertSchematic(srcFile, dst, sch, sheet) {
       let rotation = (((rot || 0) % 360) + 360) % 360;
       if (mirrors.includes('x')) { isMirror = true; rotation = (rotation + 180) % 360; }
       const compId = randId();
-      const compX = toSch(x), compY = flipYSch(y);
+      const compX = toSch(x), compY = pageY(y);
+      // KiCad property positions are absolute page coords — reuse them so
+      // Designator/Name land exactly where KiCad drew them (user issue: big ICs
+      // overlapped a fixed +10/+10 offset).
+      const propPos = {};
+      for (const it of node.slice(1)) {
+        if (!(Array.isArray(it) && it[0].v === 'property')) continue;
+        const at = findSub(it, 'at');
+        if (at && at.length >= 2 && /^[\d.-]+$/.test(String(at[0])) && /^[\d.-]+$/.test(String(at[1]))) {
+          propPos[it[1]?.v] = [toSch(at[0]), pageY(at[1])];
+        }
+      }
       ticket++;
       pageRecords.push({
         head: { type: 'COMPONENT', ticket, id: compId },
         body: {
           partId: lib.partId,
           x: compX, y: compY, rotation, isMirror,
-          attrs: {
-            Footprints: '[]', Devices: '[]',
-            DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
-            FootprintName: null, pinClass: {}, differentialPairClass: {}, Symbols: '[]'
-          },
+          attrs: lib.isPower
+            ? { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }
+            : {
+                Footprints: '[]', Devices: '[]',
+                DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
+                FootprintName: null, pinClass: {}, differentialPairClass: {}, Symbols: '[]'
+              },
           zIndex: ++componentZ
         }
       });
-      // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
-      // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
-      // without them the instance renders empty.
-      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
-      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
-      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', 'gge' + (++ggeCounter)));
-      if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, compX, compY + 10, 'CENTER_BOTTOM'));
-      if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Value', props.Value, compX, compY - 10, 'CENTER_TOP'));
+      if (lib.isPower) {
+        // Power flags bind through Symbol/Device and carry the net name in
+        // Name + Global Net Name, positioned like the symbol-doc attr offsets.
+        // Official exports leave kv/vv null here; visibility comes from the
+        // symbol doc's own Name attr.
+        const powerVis = { fontSize: null, keyVisible: null, valueVisible: null };
+        pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', lib.symDocUuid, compX, compY + 30, null, powerVis));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
+        const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+      } else {
+        // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
+        // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
+        // without them the instance renders empty.
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', props.Reference || 'gge' + (++ggeCounter)));
+        // Designator/Name at the KiCad property positions when present,
+        // otherwise just right of the origin like official exports.
+        const [dsgX, dsgY] = propPos.Reference || [compX + 10, compY];
+        const [valX, valY] = propPos.Value || [compX + 10, compY + 10];
+        if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, dsgX, dsgY, null, { fontSize: null }));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', ''));
+        if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value, valX, valY, null, { fontSize: null }));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));
+      }
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
     }
   }
 
-  writeRecords(dst, [...libDocs, ...pageRecords]);
+  // Sheet frame (docType 20 "Drawing-Symbol_A4"): the app renders the border
+  // from this built-in template; we embed its SYMBOL + DEVICE docs verbatim and
+  // place a frame COMPONENT at the page origin with the title-block ATTRs.
+  const frameCompId = randId();
+  const frameDeviceUuid = (FRAME_TEMPLATE.device.find(r => r.type === 'DOCHEAD').body).uuid;
+  const frameSymbolUuid = (FRAME_TEMPLATE.symbol.find(r => r.type === 'DOCHEAD').body).uuid;
+  const now = new Date();
+  const pad2 = n => String(n).padStart(2, '0');
+  const dateStr = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const timeStr = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+  const frameValueOverrides = {
+    '@Project Name': opts.projectName || 'KiCad Project',
+    '@Schematic Name': sch.title || 'Schematic1',
+    '@Page Name': sheet.title,
+    '@Page No': String(sheet.zIndex || 1),
+    '@Page Count': String(pageCount),
+    '@Create Date': dateStr, '@Update Date': dateStr,
+    '@Create Time': timeStr, '@Update Time': timeStr,
+    // The built-in frame graphics are suppressed; KiCad's own frame is drawn
+    // below as native records instead (keeps the A4 page size handling).
+    Border: '0', 'Title Block': '0',
+    ...tb
+  };
+  pageRecords.push({
+    head: { type: 'COMPONENT', ticket: ++ticket, id: frameCompId },
+    body: {
+      partId: MAGIC_PART_ID, x: 0, y: 0, rotation: 0, isMirror: false,
+      attrs: {
+        Footprints: '[]', Devices: '[]',
+        DeviceName: JSON.stringify({ uuid: frameDeviceUuid, name: 'Drawing-Symbol_A4', source: '' })
+      },
+      zIndex: null
+    }
+  });
+  for (const r of FRAME_TEMPLATE.pageAttrs) {
+    ticket++;
+    pageRecords.push({
+      head: { type: 'ATTR', ticket, id: randId() },
+      body: { ...r.body, parentId: frameCompId, value: frameValueOverrides[r.body.key] != null ? frameValueOverrides[r.body.key] : r.body.value, zIndex: ticket }
+    });
+  }
+  drawKicadFrame(rec, paper, pageH, {
+    ...kicadFrameFields,
+    sheetNo: String(sheet.zIndex || 1),
+    sheetCount: String(pageCount),
+    paper,
+    sheetPath: '/'
+  });
+
+  writeRecords(dst, [
+    ...FRAME_TEMPLATE.symbol, ...FRAME_TEMPLATE.device,
+    ...libDocs, ...pageRecords
+  ]);
+}
+
+// Draw KiCad's default worksheet frame (double border, 50 mm grid references,
+// title block) as native LINE/TEXT records — a faithful port of
+// kicad-source-mirror common/page_layout/page_layout_default_description.cpp:
+// margins 10 mm, ref pitch 50 mm, title block 108×32 mm at the bottom-right,
+// all coordinates relative to the corners (default = bottom-right).
+function drawKicadFrame(rec, paper, pageH, f) {
+  const [W, H] = PAPER_SIZE_MM[paper] || PAPER_SIZE_MM.A4;
+  const M = 10; // margins in mm
+  const X = mm => toSch(mm);
+  const Y = mm => flipYSch(mm, pageH);
+  const LW = 0.59; // KiCad default 0.15 mm stroke
+  // Every real LINE belongs to a WIRE group record ("所属的导线或总线组 id");
+  // lines whose group record is missing are dropped by the client.
+  const line = (x1, y1, x2, y2) => {
+    const gid = randId();
+    rec('WIRE', {}, gid);
+    rec('LINE', {
+      fillColor: '', fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: LW,
+      startX: X(x1), startY: Y(y1), endX: X(x2), endY: Y(y2), lineGroup: gid
+    });
+  };
+  const text = (value, xmm, ymm, fontSize, opts = {}) => {
+    if (!value) return;
+    rec('TEXT', {
+      groupId: '', x: X(xmm), y: Y(ymm), rotation: 0, color: null, fontFamily: null,
+      fontSize, fontWeight: opts.bold || null, italic: opts.italic || null,
+      underline: null, strikeout: null, align: opts.align || 'LEFT_MIDDLE',
+      value, fillColor: null, locked: false
+    });
+  };
+  const nextNum = v => (/\d/.test(v) ? String(parseInt(v, 10) + 1) : String.fromCharCode(v.charCodeAt(0) + 1));
+
+  // double border: (M,M)-(W-M,H-M) and (M+2,M+2)-(W-M-2,H-M-2)
+  line(M, M, W - M, M); line(W - M, M, W - M, H - M); line(W - M, H - M, M, H - M); line(M, H - M, M, M);
+  line(M + 2, M + 2, W - M - 2, M + 2); line(W - M - 2, M + 2, W - M - 2, H - M - 2); line(W - M - 2, H - M - 2, M + 2, H - M - 2); line(M + 2, H - M - 2, M + 2, M + 2);
+
+  // grid reference bands: ticks + auto-incrementing refs (1,2,3... / A,B,C...).
+  // Top/bottom refs count from the left; left counts from the top, right from
+  // the bottom (ltcorner/lbcorner/rtcorner origins in the KiCad description).
+  const refSize = 5.1; // 1.3 mm
+  for (let x = M + 50; x < W - M; x += 50) { line(x, M, x, M + 2); line(x, H - M - 2, x, H - M); }
+  for (let y = M + 50; y < H - M; y += 50) line(M, y, M + 2, y);
+  for (let y = H - M - 50; y > M; y -= 50) line(W - M - 2, y, W - M, y);
+  for (let x = M + 25, n = '1'; x <= W - M; x += 50, n = nextNum(n)) {
+    text(n, x, M + 1, refSize, { align: 'CENTER_MIDDLE' });
+    text(n, x, H - M - 1, refSize, { align: 'CENTER_MIDDLE' });
+  }
+  for (let y = M + 25, n = 'A'; y <= H - M; y += 50, n = nextNum(n)) {
+    text(n, M + 1, y, refSize, { align: 'CENTER_MIDDLE' });
+    text(n, W - M - 1, H - y, refSize, { align: 'CENTER_MIDDLE' });
+  }
+
+  // title block
+  const TX = W - 110, TY = H - 34, BX = W - 2, BY = H - 2;
+  line(TX, TY, BX, TY); line(BX, TY, BX, BY); line(BX, BY, TX, BY); line(TX, BY, TX, TY);
+  line(TX, H - 5.5, BX, H - 5.5);
+  line(TX, H - 8.5, BX, H - 8.5);
+  line(TX, H - 12.5, BX, H - 12.5);
+  line(TX, H - 18.5, BX, H - 18.5);
+  line(W - 90, H - 8.5, W - 90, H - 5.5);
+  line(W - 26, H - 8.5, W - 26, BY);
+  const ts = 5.9;  // 1.5 mm default text
+  text(`Id: ${f.sheetNo}/${f.sheetCount}`, W - 24, H - 4.1, ts);
+  text(f.version, W - 109, H - 4.1, ts);
+  text(`Date: ${f.date}`, W - 87, H - 6.9, ts);
+  text(`Rev: ${f.rev}`, W - 24, H - 6.9, ts, { bold: true });
+  text(`Size: ${f.paper}`, W - 109, H - 6.9, ts);
+  text(`Title: ${f.title}`, W - 109, H - 10.7, 7.9, { bold: true, italic: true });
+  text(`File: ${f.file}`, W - 109, H - 14.3, ts);
+  text(`Sheet: ${f.sheetPath}`, W - 109, H - 17, ts);
+  text(f.company, W - 109, H - 20, ts, { bold: true });
+  for (let i = 0; i < 4; i++) text(f.comments[i] || '', W - 109, H - 23 - 3 * i, ts);
 }
 
 // KiCad graphical-item stroke/fill → eprj3 schematic shape common fields
@@ -378,14 +607,14 @@ function shapeCommon(node, extra) {
 }
 
 // Hierarchical sheet: box + name text + per-pin net labels
-function convertHierSheet(node, rec) {
+function convertHierSheet(node, rec, pageY) {
   const at = findSub(node, 'at');
   const size = findSub(node, 'size');
   const props = collectProperties(node);
   if (!at || !size) { warn('sheet without at/size'); return; }
-  const x = toSch(at[0]), y = flipYSch(at[1]);
+  const x = toSch(at[0]), y = pageY(at[1]);
   const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0]));
-  const y2 = flipYSch(parseFloat(at[1]) + parseFloat(size[1]));
+  const y2 = pageY(parseFloat(at[1]) + parseFloat(size[1]));
   rec('RECT', {
     partId: '', groupId: '', locked: false,
     dotX1: x, dotY1: y, dotX2: x2, dotY2: y2,
@@ -406,7 +635,7 @@ function convertHierSheet(node, rec) {
       const atSub = findSub(it, 'at');
       if (!atSub) continue;
       rec('NETLABEL', {
-        x: toSch(atSub[0]), y: flipYSch(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
+        x: toSch(atSub[0]), y: pageY(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
         fontSize: 5, align: 'CENTER_MIDDLE', value: pinName, locked: false
       });
     }
@@ -433,14 +662,15 @@ function textEffects(node) {
   return out;
 }
 
-function pageAttr(parentId, ticket, key, value, x, y, align) {
+function pageAttr(parentId, ticket, key, value, x, y, align, extra = {}) {
   return {
     head: { type: 'ATTR', ticket, id: randId() },
     body: {
       x, y, rotation: 0, color: null, fontFamily: null, fontSize: 5,
       fontWeight: null, italic: null, underline: null, strikeout: null, align,
       value, keyVisible: false, valueVisible: true, key,
-      fillColor: null, groupId: '', parentId, zIndex: ticket, locked: false
+      fillColor: null, groupId: '', parentId, zIndex: ticket, locked: false,
+      ...extra
     }
   };
 }
@@ -545,7 +775,7 @@ function convertPcb(srcFile, dst, pcb) {
   const netNames = {};
   for (const node of root.slice(1)) {
     if (Array.isArray(node) && node[0].v === 'net' && node[1] && /^\d+$/.test(node[1].v || '')) {
-      const name = node[2]?.v || '';
+      const name = normNet(node[2]?.v || '');
       if (name) netNames[node[1].v] = name;
     }
   }
@@ -565,9 +795,15 @@ function convertPcb(srcFile, dst, pcb) {
     return usedFps[name];
   }
 
-  const docRecords = pcbDocRecords(pcb); // DOCHEAD PCB + META + CANVAS + LAYERs + ACTIVE_LAYER
-  let ticket = docRecords.length;
+  // DOCHEAD + META + the static editor config block the client requires.
+  const docRecords = [
+    docHead('PCB', pcb.uuid),
+    { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, parent: '', source: '', board: pcb.board, zIndex: null } },
+    ...PCB_CONFIG.map((r, i) => ({ head: { type: r.type, ticket: 2 + i, id: r.id }, body: r.body }))
+  ];
+  let ticket = docRecords.length + 1;
   const body = [];
+  const compBody = [];
   const usedNets = new Set();
   const outlinePaths = [];
   const openSegments = [];
@@ -635,8 +871,12 @@ function convertPcb(srcFile, dst, pcb) {
         unusedInnerLayers: [], propagationDelay: 0
       });
     } else if (head === 'footprint') {
+      const pushComp = (type, recBody, id) => {
+        compBody.push({ head: { type, ticket: nextTicket(), id: id || randId() }, body: recBody });
+        return ticket;
+      };
       convertFootprint(node, {
-        netNames, usedNets, usedFps, ensureFootprintDoc, nextTicket, push, body
+        netNames, usedNets, usedFps, ensureFootprintDoc, nextTicket, push: pushComp, body: compBody
       });
     } else if (head === 'gr_line' || head === 'gr_arc' || head === 'gr_rect' || head === 'gr_circle' || head === 'gr_poly' || head === 'bezier') {
       const layerArr = findSub(node, 'layer');
@@ -732,19 +972,45 @@ function convertPcb(srcFile, dst, pcb) {
     outlinePaths.push(path);
   }
   for (const path of outlinePaths) {
-    push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path, polyType: 'BOARD_OUTLINE' });
+    // Rectangular boards are written as the "R" descriptor in real exports.
+    const outPath = rectDescriptor(path) || path;
+    push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path: outPath, polyType: 'BOARD_OUTLINE' });
   }
 
-  // NET index records (payload as written by the official app; head id is the net name)
-  for (const netName of usedNets) {
-    ticket++;
-    body.push({
-      head: { type: 'NET', ticket, id: netName },
+  // NET index records — the official head id is the JSON array ["NET",<name>]
+  // and the default net "" has an empty payload.
+  const netRecords = [];
+  for (const netName of [...usedNets].sort()) {
+    if (!netName) continue;
+    netRecords.push({
+      head: { type: 'NET', ticket: nextTicket(), id: JSON.stringify(['NET', netName]) },
       body: { netType: null, specialColor: null, retLine: true, differentialName: null, isPositiveNet: false, equalLengthGroupName: null }
     });
   }
 
-  writeRecords(dst, [...libDocs, ...docRecords, ...body]);
+  // File order mirrors real exports: config → NETs → components(+PAD_NET/ATTR) →
+  // default RULE_SELECTOR → drawing items. Tickets are renumbered to match.
+  const ordered = [
+    ...docRecords,
+    ...netRecords,
+    ...compBody,
+    { head: { type: 'RULE_SELECTOR', ticket: 0, id: JSON.stringify(['RULE_SELECTOR', ['NET', '']]) }, body: {} },
+    ...body
+  ];
+  let t = 1;
+  for (const rec of ordered) {
+    if (rec.head.type === 'DOCHEAD') continue;
+    rec.head.ticket = ++t;
+  }
+  writeRecords(dst, [...libDocs, ...ordered]);
+}
+
+// KiCad escapes '/' in net names as {slash}; unconnected-(...) placeholders
+// mean the pad has no net yet (EasyEDA models those with net '').
+function normNet(name) {
+  if (!name) return '';
+  if (/^unconnected-\(/.test(name)) return '';
+  return name.replace(/\{slash\}/g, '/');
 }
 
 function r2(v) { return Math.round(v * 100) / 100; }
@@ -753,6 +1019,8 @@ function netOf(node, netNames) {
   const netArr = findSub(node, 'net');
   return netArr ? (netNames[netArr[0]] || '') : '';
 }
+
+
 
 function strokeWidthOf(node, fallback) {
   const w = findSub(node, 'width');
@@ -845,13 +1113,15 @@ function convertDimension(node, push) {
 
 // zone → POUR (+POURED per filled_polygon) or REGION for keepouts
 function convertZone(node, { netNames, usedNets, push }) {
+  // POUR.width is stored in mm in eprj3 files (real exports: 0.2) even though
+  // every other PCB coordinate is mil.
   const minThick = findSub(node, 'min_thickness');
-  const width = minThick ? toMil(minThick[0]) : 10;
+  const width = minThick ? parseFloat(minThick[0]) || 0.2 : 0.2;
   const nameArr = findSub(node, 'name');
   const prioArr = findSub(node, 'priority');
   const keepout = findSubNode(node, 'keepout');
 
-  // polygons: one or more (polygon (pts ...))
+  // polygons: one or more (polygon (pts ...)) → "L"-token polyline sub-paths
   const polys = [];
   for (const it of node.slice(1)) {
     if (Array.isArray(it) && it[0].v === 'polygon') {
@@ -859,10 +1129,17 @@ function convertZone(node, { netNames, usedNets, push }) {
       if (pts && pts.length > 2) {
         const flat = [];
         for (const p of pts) flat.push(r2(toMil(p.x)), r2(flipY(p.y)));
-        polys.push([...flat, flat[0], flat[1]]);
+        polys.push([flat[0], flat[1], 'L', ...flat.slice(2), flat[0], flat[1]]);
       }
     }
   }
+  // Real exports write rectangular pour borders as the "R" rect descriptor
+  // [minX, maxY, w, h, 0, 0] (second value is the TOP edge on the Y-up canvas),
+  // not as a polyline.
+  polys.forEach((poly, i) => {
+    const rect = rectDescriptor(poly);
+    if (rect) polys[i] = rect;
+  });
 
   const layers = [];
   const layerArr = findSub(node, 'layer');
@@ -897,20 +1174,25 @@ function convertZone(node, { netNames, usedNets, push }) {
 
   const netArr = findSub(node, 'net');
   const netNameArr = findSub(node, 'net_name');
-  const netName = (netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || '') : '');
+  const netName = normNet((netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || '') : ''));
   if (netName) usedNets.add(netName);
 
   if (!polys.length) { warn('zone without polygon'); return; }
 
   for (const lname of layers) {
     const pourId = randId();
+    const order = prioArr ? parseInt(prioArr[0], 10) || 0 : 0;
     push('POUR', {
       partitionId: '', groupId: 0, locked: false, zIndex: -1,
       netName, layerId: layerToId(lname), width,
-      name: (nameArr && nameArr[0]) || '', order: prioArr ? parseInt(prioArr[0], 10) || 0 : 0,
+      name: (nameArr && nameArr[0]) || `POUR${order + 1}`, order,
       path: polys, pourType: { pourType: 'SOLID', fineness: 8 }, keepIsland: false
     }, pourId);
-    // poured fill results: one POURED per zone+layer, head id = ["POURED", pourId]
+    // poured fill results: one POURED per zone+layer, head id = ["POURED", pourId].
+    // POURED.pourFill paths use the 0.254 mm unit (10 mil, like schematic data),
+    // NOT the mil of the surrounding PCB document — verified against a real
+    // export where fill·10 mil sits exactly clearance-inside the board outline
+    // and fill arcs land on component pads.
     const pourFill = [];
     for (const it of node.slice(1)) {
       if (!(Array.isArray(it) && it[0].v === 'filled_polygon')) continue;
@@ -919,13 +1201,36 @@ function convertZone(node, { netNames, usedNets, push }) {
       const pts = extractPts(it);
       if (!pts || pts.length < 3) continue;
       const flat = [];
-      for (const p of pts) flat.push(r2(toMil(p.x)), r2(flipY(p.y)));
-      pourFill.push({ id: randId(), strokeWidth: 0, fill: true, path: [[...flat, flat[0], flat[1]]] });
+      for (const p of pts) flat.push(r2(toFillUnit(p.x)), r2(-toFillUnit(p.y)));
+      pourFill.push({ id: randId(), strokeWidth: 0, fill: true, path: [[flat[0], flat[1], 'L', ...flat.slice(2), flat[0], flat[1]]] });
     }
     if (pourFill.length) {
       push('POURED', { pourFill }, JSON.stringify(['POURED', pourId]));
     }
   }
+}
+
+// mil-unit closed polyline (bare start + "L" tokens) → "R" descriptor when the
+// path is an axis-aligned rectangle, else null.
+function rectDescriptor(poly) {
+  if (poly[2] !== 'L') return null;
+  const rest = poly.slice(3);
+  if (rest.length % 2 !== 0 || rest.some(v => typeof v !== 'number')) return null;
+  const pts = [[poly[0], poly[1]]];
+  for (let i = 0; i < rest.length; i += 2) pts.push([rest[i], rest[i + 1]]);
+  if (pts.length !== 5) return null;
+  const [x0, y0] = pts[0];
+  if (pts[4][0] !== x0 || pts[4][1] !== y0) return null;
+  const xs = new Set(pts.slice(0, 4).map(p => p[0])), ys = new Set(pts.slice(0, 4).map(p => p[1]));
+  if (xs.size !== 2 || ys.size !== 2) return null;
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  return ['R', minX, maxY, r2(maxX - minX), r2(maxY - minY), 0, 0];
+}
+
+// KiCad mm → 0.254 mm canvas unit (10 mil) — the POURED fill coordinate unit.
+function toFillUnit(mm) {
+  return mm / 0.254;
 }
 
 
@@ -939,32 +1244,34 @@ function convertFootprint(node, ctx) {
   const shapes = extractFpShapes(node);
   const texts = extractFpTexts(node);
   const lib = ensureFootprintDoc(fpName, { pads, shapes, value: texts.Value || '' });
-  for (const p of pads) if (p.netName) usedNets.add(p.netName);
+  for (const p of pads) { const n = normNet(p.netName); if (n) usedNets.add(n); }
 
   const compId = randId();
   const compAngle = flipRot(at && at[2] || 0);
   const cx = toMil(at && at[0] || 0);
   const cy = flipY(at && at[1] || 0);
+  const pinSwapInfo = {};
+  for (const p of lib.pads) pinSwapInfo[compId + p.id] = { pinClass: '', differentialPairClass: '' };
   const atTicket = push('COMPONENT', {
     partitionId: '', groupId: 0, layerId: /B\./.test(fpLayer) ? 2 : 1,
     x: cx, y: cy, angle: compAngle,
     attrs: {
       'Reuse Block': '', 'Group ID': '', 'Channel ID': '',
-      'Unique ID': 'gge' + (++ggeCounter),
+      'Unique ID': texts.Reference || 'gge' + (++ggeCounter),
       DeviceName: JSON.stringify({ uuid: lib.devUuid, name: fpName, source: '' })
     },
-    locked: false, zIndex: -1, pinSwap: false, pinSwapInfo: {}, footprintPrimitives: true
+    locked: false, zIndex: -1, pinSwap: false, pinSwapInfo, footprintPrimitives: true
   }, compId);
   body.push(pcbAttr(nextTicket(), compId, 'Footprint', lib.docUuid, null, null, false, compAngle, atTicket));
   body.push(pcbAttr(nextTicket(), compId, 'Device', lib.devUuid, null, null, false, compAngle, -1));
   const designator = texts.Reference || '';
   if (designator) body.push(pcbAttr(nextTicket(), compId, 'Designator', designator, cx, cy, true, compAngle, atTicket));
   lib.pads.forEach((p, idx) => {
-    const netName = pads[idx] && pads[idx].netName;
+    const netName = normNet(pads[idx] && pads[idx].netName);
     if (!netName) return;
     body.push({
       head: { type: 'PAD_NET', ticket: nextTicket(), id: JSON.stringify(['PAD_NET', compId, p.num, p.id]) },
-      body: { partitionId: '', componentId: compId, padNum: p.num, padNet: netName, padId: p.id, padLen: 0, propagationDelay: 0, attrsMap: {} }
+      body: { partitionId: '', padNet: netName, padLen: null, propagationDelay: null, attrsMap: {} }
     });
   });
 }
