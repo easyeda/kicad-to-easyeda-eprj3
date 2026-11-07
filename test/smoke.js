@@ -96,7 +96,14 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
   (segment (start 0 0) (end 10 0) (width 0.25) (layer "B.Cu") (net 1))
   (arc (start 10 0) (mid 12.5 2.5) (end 15 0) (width 0.25) (layer "B.Cu") (net 1))
   (via (at 15 0) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
-  (gr_rect (start 0 0) (end 40 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_line (start 0 25) (end 0 5) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_arc (start 0 5) (mid 1.4645 1.4645) (end 5 0) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_line (start 5 0) (end 35 0) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_arc (start 35 0) (mid 38.5355 1.4645) (end 40 5) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_line (start 40 5) (end 40 25) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_arc (start 40 25) (mid 38.5355 28.5355) (end 35 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_line (start 35 30) (end 5 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
+  (gr_arc (start 5 30) (mid 1.4645 28.5355) (end 0 25) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))
   (gr_circle (center 20 25) (end 22 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
   (gr_arc (start 30 25) (mid 32.5 22.5) (end 35 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
   (gr_poly (pts (xy 0 25) (xy 5 25) (xy 5 30)) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
@@ -106,6 +113,9 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
   (zone (net 2) (net_name "VCC") (layer "F.Cu") (name "zone1") (min_thickness 0.2)
     (polygon (pts (xy 0 0) (xy 40 0) (xy 40 30) (xy 0 30)))
     (filled_polygon (layer "F.Cu") (pts (xy 0.5 0.5) (xy 39.5 0.5) (xy 39.5 29.5) (xy 0.5 29.5))))
+  (zone (net "GND") (layer "F.Cu") (name "zone2") (min_thickness 0.2)
+    (polygon (pts (xy 0 0) (xy 20 0) (xy 20 15) (xy 0 15)))
+  )
   (footprint "R_0603" (layer "F.Cu") (at 5 5)
     (property "Reference" "R1" (at 5 4 0) (layer "F.SilkS"))
     (pad "1" smd rect (at -0.75 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
@@ -237,6 +247,30 @@ function main() {
     assert(layers.every(r => r.body.layerId !== undefined), 'LAYER payloads carry layerId');
     const outline = pcbDoc.records.find(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
     assert(outline && outline.body.layerId === 11, 'Edge.Cuts becomes a BOARD_OUTLINE POLY on layer 11');
+    const outlines = pcbDoc.records.filter(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
+    assert(outlines.length === 1, 'arcs+lines chain into a single closed BOARD_OUTLINE', `count=${outlines.length}`);
+    if (outline) {
+      const pp = outline.body.path;
+      const pts = [];
+      for (let i = 0; i < pp.length; i++) {
+        if (typeof pp[i] === 'number' && typeof pp[i + 1] === 'number') { pts.push([pp[i], pp[i + 1]]); i++; }
+      }
+      assert(pp[2] === 'L', "outline path starts with an explicit 'L' token (host parser requirement)", JSON.stringify(pp.slice(0, 4)));
+      assert(pp.every(v => typeof v !== 'string' || v === 'L'), 'outline path carries only L tokens (no ARC blocks)', JSON.stringify(pp.filter(v => typeof v === 'string').filter((v, i, a) => a.indexOf(v) !== i)));
+      assert(pp[0] === pts[0][0] && pp[1] === pts[0][1], 'outline path starts with a coordinate pair', '');
+      assert(pts.length >= 40, 'corner arcs are polyline-sampled (>=40 points)', `points=${pts.length}`);
+      assert(pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1], 'outline closes on itself', `first=${pts[0]} last=${pts[pts.length - 1]}`);
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const bb = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+      const exp = [0, 1181.1, 1574.8, 0]; // [minX, maxY, w, h] expectations come from the 40x30 mm rounded rect, in mil
+      assert(Math.abs(bb[0] - 0) < 0.05 && Math.abs(bb[2] - 1574.8) < 0.05 && Math.abs(bb[3] - bb[1] - 1181.1) < 0.05,
+        'outline bbox matches the 40x30 mm rounded rect', `bbox=${bb}`);
+    }
+    const pours = pcbDoc.records.filter(r => r.type === 'POUR');
+    assert(pours.length === 2, 'both zones become POUR records', `count=${pours.length}`);
+    const z1 = pours.find(r => r.body.name === 'zone1'), z2 = pours.find(r => r.body.name === 'zone2');
+    assert(z1 && z1.body.netName === 'VCC', 'zone1 (numeric net 2) keeps net VCC');
+    assert(z2 && z2.body.netName === 'GND', 'zone2 (net "GND" name-string) resolves to net GND');
     const track = pcbDoc.records.find(r => r.type === 'LINE');
     assert(track && track.body.layerId === 2 && track.body.netName === 'GND', 'B.Cu segments become LINE tracks on layerId 2 with net name');
     assert(track && Math.abs(track.body.width - kicadToEprj3(0.25)) < 0.01, 'track keeps the KiCad wire width');

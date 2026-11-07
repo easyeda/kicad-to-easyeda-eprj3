@@ -903,7 +903,27 @@ function convertPcb(srcFile, dst, pcb) {
         if (!s || !m || !e) { warn('gr_arc without start/mid/end'); continue; }
         const width = strokeWidthOf(node, 0.15);
         if (isEdge) {
-          outlinePaths.push(arcOutlinePath(s, m, e));
+          // Edge.Cuts arcs are flattened to <=2 degree polylines so chainSegments
+          // can stitch lines+arcs into ONE closed outline. The host path grammar
+          // ('ARC', sweep, endX, endY; bare numbers reuse the previous token)
+          // cannot express a closed path containing an 'ARC' block: the bare
+          // closing pair after an ARC block is re-consumed as a new ARC and hits
+          // "invalid rawData" in the V4.1.60 parser. Sagitta at 2 degrees on
+          // r <= 150 mil: r*(1-cos 1 deg) <= 0.0006 mm, within 0.001 mm tolerance.
+          const x1 = toMil(s[0]), y1 = flipY(s[1]);
+          const mx = toMil(m[0]), my = flipY(m[1]);
+          const x2 = toMil(e[0]), y2 = flipY(e[1]);
+          const { cx, cy, sweep } = arcSweep(x1, y1, mx, my, x2, y2);
+          const r = Math.hypot(x1 - cx, y1 - cy);
+          const a0 = Math.atan2(y1 - cy, x1 - cx);
+          const steps = Math.max(2, Math.ceil(Math.abs(sweep) / 2));
+          let px = x1, py = y1;
+          for (let i = 1; i <= steps; i++) {
+            const a = a0 + sweep * Math.PI / 180 * (i / steps);
+            const nx = cx + r * Math.cos(a), ny = cy + r * Math.sin(a);
+            openSegments.push([px, py, nx, ny]);
+            px = nx; py = ny;
+          }
         } else {
           const x1 = toMil(s[0]), y1 = flipY(s[1]);
           const mx = toMil(m[0]), my = flipY(m[1]);
@@ -973,7 +993,10 @@ function convertPcb(srcFile, dst, pcb) {
   }
   for (const path of outlinePaths) {
     // Rectangular boards are written as the "R" descriptor in real exports.
-    const outPath = rectDescriptor(path) || path;
+    // A tokenless (bare-number) path hits "default → invalid rawData" in the host
+    // path parser (bare numbers with no preceding token). Ensure an explicit 'L'
+    // after the first point; subsequent bare numbers reuse the 'L' token, valid.
+    const outPath = rectDescriptor(path) || [path[0], path[1], 'L', ...path.slice(2)];
     push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path: outPath, polyType: 'BOARD_OUTLINE' });
   }
 
@@ -1174,7 +1197,11 @@ function convertZone(node, { netNames, usedNets, push }) {
 
   const netArr = findSub(node, 'net');
   const netNameArr = findSub(node, 'net_name');
-  const netName = normNet((netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || '') : ''));
+  // zone (net "NAME") writes a name string instead of a numeric net index; the
+  // netNames table is keyed by numeric index only, so the lookup misses and the
+  // pour silently loses its net (12 floating pours on the PSDR board). Use the
+  // name string directly when it is not a numeric index.
+  const netName = normNet((netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || (String(netArr[0]).match(/^\d+$/) ? '' : netArr[0])) : ''));
   if (netName) usedNets.add(netName);
 
   if (!polys.length) { warn('zone without polygon'); return; }
