@@ -37,6 +37,7 @@ const {
   kicadToSchUnit, flipYSch, circumcenter, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
+const { findViolation } = require('./lib/hostpath');
 const { parseArgs, printHelp, die } = require('./lib/utils');
 
 const schema = [
@@ -959,7 +960,7 @@ function convertPcb(srcFile, dst, pcb) {
         if (!pts || pts.length < 3) continue;
         const flat = [];
         for (const p of pts) flat.push(toMil(p.x), flipY(p.y));
-        const path = [...flat, flat[0], flat[1]];
+        const path = [flat[0], flat[1], 'L', ...flat.slice(2), flat[0], flat[1]];
         if (isEdge) outlinePaths.push(path);
         else push('POLY', { ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)), path, polyType: 'NORMAL' });
       } else if (head === 'bezier') {
@@ -986,7 +987,32 @@ function convertPcb(srcFile, dst, pcb) {
   }
 
   // Stitch Edge.Cuts line segments into (closed where possible) outline polylines
-  for (const chain of chainSegments(openSegments)) {
+  let chains = chainSegments(openSegments);
+  // Chain-level fragment absorption: if chaining still strands small chains
+  // (genuine sub-2-mil source gaps), snap each small chain's two endpoints
+  // onto the nearest big-chain point (box |dx|,|dy| < 2 mil, the same criteria
+  // as chainSegments' near()) and re-chain everything once. Interior points
+  // stay put; smalls still stranded after that single re-chain are kept as-is
+  // (prefer a leftover fragment over a wrong merge; no third round).
+  {
+    const bigs = chains.filter(c => c.length > 10), smalls = chains.filter(c => c.length <= 10);
+    if (smalls.length) {
+      const anchors = [];
+      for (const b of bigs) for (let i = 0; i < b.length; i += 2) anchors.push(b[i], b[i + 1]);
+      for (const s of smalls) for (const e of [0, s.length - 2]) {
+        let best = null, bd = Infinity;
+        for (let i = 0; i < anchors.length; i += 2) {
+          const dx = Math.abs(anchors[i] - s[e]), dy = Math.abs(anchors[i + 1] - s[e + 1]);
+          if (dx < 2 && dy < 2) { const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } }
+        }
+        if (best !== null) { s[e] = anchors[best]; s[e + 1] = anchors[best + 1]; }
+      }
+      const segs = [];
+      for (const c of chains) for (let i = 0; i + 3 < c.length; i += 2) segs.push([c[i], c[i + 1], c[i + 2], c[i + 3]]);
+      chains = chainSegments(segs);
+    }
+  }
+  for (const chain of chains) {
     const closed = Math.abs(chain[0] - chain[chain.length - 2]) < 0.5 && Math.abs(chain[1] - chain[chain.length - 1]) < 0.5;
     const path = closed ? chain : [...chain, chain[0], chain[1]];
     outlinePaths.push(path);
@@ -1025,6 +1051,12 @@ function convertPcb(srcFile, dst, pcb) {
     if (rec.head.type === 'DOCHEAD') continue;
     rec.head.ticket = ++t;
   }
+  // Host grammar validation: every path-bearing record must survive the client's
+  // build8 path parser (tokenless paths and bare close-back pairs after ARC
+  // blocks throw "invalid rawData" in V4.1.60). Fail the conversion loudly
+  // instead of shipping a file the client chokes on.
+  const bad = findViolation(ordered);
+  if (bad) throw new Error(`host-path grammar violation in ${bad.type} ${bad.id}: ${bad.reason}`);
   writeRecords(dst, [...libDocs, ...ordered]);
 }
 
@@ -1213,7 +1245,10 @@ function convertZone(node, { netNames, usedNets, push }) {
       partitionId: '', groupId: 0, locked: false, zIndex: -1,
       netName, layerId: layerToId(lname), width,
       name: (nameArr && nameArr[0]) || `POUR${order + 1}`, order,
-      path: polys, pourType: { pourType: 'SOLID', fineness: 8 }, keepIsland: false
+      // fineness 8 (max fill resolution) makes the V4.1.60 client spend 30+ min
+      // in its DRC/fill pipeline on boards with several overlapping full-board
+      // pours; fineness 1 loads the same board in ~1-2 min with DRC intact.
+      path: polys, pourType: { pourType: 'SOLID', fineness: 1 }, keepIsland: false
     }, pourId);
     // poured fill results: one POURED per zone+layer, head id = ["POURED", pourId].
     // POURED.pourFill paths use the 0.254 mm unit (10 mil, like schematic data),
@@ -1318,7 +1353,12 @@ function pcbAttr(ticket, parentId, key, value, x, y, valueVisible, angle, zIndex
 
 function chainSegments(segments) {
   const EPS = 0.5; // mil
-  const near = (x1, y1, x2, y2) => Math.abs(x1 - x2) < EPS && Math.abs(y1 - y2) < EPS;
+  // Euclidean, NOT box (|dx|,|dy|): dense 2-degree arc samples sit 0.67 mil
+  // apart; on r~20 mil arcs the 45-degree chords have |dx|=|dy|=0.475, which
+  // passed the box test and let the chain skip real samples (stranding arc-mid
+  // fragments as bogus outline polys). Euclid 0.5 keeps exact junctions
+  // (0-gap) chained and rejects those chords.
+  const near = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2) < EPS;
   const remaining = segments.map(s => s.slice());
   const chains = [];
   while (remaining.length) {
