@@ -4,7 +4,7 @@
   "description": "Convert KiCad projects to EasyEDA Pro .eprj3 projects and KiCad libraries to .elibz2 library packages",
   "main": "scripts/convert-kicad.js",
   "scripts": {
-    "test": "node test/smoke.js",
+    "test": "node test/smoke.js && node test/hostpath.test.js",
     "convert": "node scripts/convert-kicad.js",
     "convert-lib": "node scripts/convert-kicad-lib.js"
   },
