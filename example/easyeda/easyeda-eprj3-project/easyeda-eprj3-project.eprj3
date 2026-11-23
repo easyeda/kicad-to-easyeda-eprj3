@@ -13,7 +13,7 @@
   "g_ticket": 1,
   "boards": [],
   "block_symbol_attrs_groups": {},
-  "default_sheet": "",
+  "default_sheet": "14cd8789505c2a77",
   "branch_uuid": "",
   "pcb_count": 0,
   "format": "folder",
@@ -23,27 +23,49 @@
         "uuid": "5704c374b3c25820",
         "title": "Board1",
         "zIndex": 1
+      },
+      "6445647d6a12617d": {
+        "uuid": "6445647d6a12617d",
+        "title": "CBB1",
+        "zIndex": 2
       }
     },
     "schematics": {
+      "628ae39b9235cad0": {
+        "uuid": "628ae39b9235cad0",
+        "name": "CBB1",
+        "board": "6445647d6a12617d",
+        "source": "",
+        "version": "1795438289115",
+        "updateTime": 1795438289115
+      },
       "dfc4a5125c45a472": {
         "uuid": "dfc4a5125c45a472",
         "name": "Schematic1",
         "board": "5704c374b3c25820",
         "source": "",
-        "version": "1789003821803",
-        "updateTime": 1789003821803
+        "version": "1795438835376",
+        "updateTime": 1795438835376
       }
     },
     "sheets": {
+      "60c2182d75f49d5a": {
+        "uuid": "60c2182d75f49d5a",
+        "title": "P1",
+        "schematic_uuid": "628ae39b9235cad0",
+        "zIndex": 1,
+        "source": "",
+        "version": "1795438289115",
+        "updateTime": 1795438289115
+      },
       "3ada04a3cf294e09": {
         "uuid": "3ada04a3cf294e09",
         "title": "P1",
         "schematic_uuid": "dfc4a5125c45a472",
         "zIndex": 1,
         "source": "",
-        "version": "1789003821468",
-        "updateTime": 1789003821468
+        "version": "1795438815226",
+        "updateTime": 1795438815226
       },
       "9f4675dfed5da031": {
         "uuid": "9f4675dfed5da031",
@@ -51,11 +73,20 @@
         "schematic_uuid": "dfc4a5125c45a472",
         "zIndex": 2,
         "source": "",
-        "version": "1789003821803",
-        "updateTime": 1789003821803
+        "version": "1795438835376",
+        "updateTime": 1795438835376
       }
     },
     "pcbs": {
+      "6b872e208e254029": {
+        "uuid": "6b872e208e254029",
+        "title": "CBB1",
+        "board": "6445647d6a12617d",
+        "parent_uuid": "",
+        "source": "",
+        "version": "1795438057383",
+        "updateTime": 1795438057383
+      },
       "2e2dcab1266cc0ae": {
         "uuid": "2e2dcab1266cc0ae",
         "title": "PCB1",
@@ -63,7 +94,7 @@
         "parent_uuid": "",
         "source": "",
         "version": "1789003872516",
-        "updateTime": 1789003872648
+        "updateTime": 1789003872516
       }
     },
     "panels": {
@@ -73,7 +104,16 @@
         "zIndex": null
       }
     },
-    "blockSymbols": {},
+    "blockSymbols": {
+      "5c132fd6b7983829": {
+        "uuid": "5c132fd6b7983829",
+        "title": "CBB1",
+        "docType": 17,
+        "source": "",
+        "version": "1795438220303",
+        "updateTime": 1795438815226
+      }
+    },
     "owner": {
       "uuid": "52159e623a734559a92667bdcb3b3e5d"
     },
@@ -81,7 +121,7 @@
     "simulations": {}
   },
   "config": {
-    "defaultSheet": "",
+    "defaultSheet": "14cd8789505c2a77",
     "settings": {}
   }
 }
