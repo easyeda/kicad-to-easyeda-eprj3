@@ -191,8 +191,8 @@ function main() {
     const partDocs = schDocs.filter(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 2);
     const devDocsAll = schDocs.filter(d => d.head.body.docType === 'DEVICE');
     const frameDoc = schDocs.find(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 20);
-    assert(frameDoc && partDocs.length === 1 && devDocsAll.length === 2,
-      '.esch2 embeds the A4 frame doc plus one SYMBOL and one DEVICE doc');
+    assert(frameDoc && partDocs.length === 1 && devDocsAll.length === 3,
+      '.esch2 embeds the A4 frame + one symbol/device pair + the global-label netflag device');
     const symDoc = partDocs[0];
     const symPart = symDoc.records.find(r => r.type === 'PART');
     const comp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.partId === symPart.head.id);
@@ -223,8 +223,8 @@ function main() {
     const frameComp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.zIndex === null);
     const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
     const wireGroupIds = new Set(pageDoc.records.filter(r => r.type === 'WIRE' || r.type === 'BUS').map(r => r.head.id));
-    assert(pageAttrs.every(r => r.body.parentId === comp.head.id
-        || (frameComp && r.body.parentId === frameComp.head.id)
+    const compIds = new Set(pageDoc.records.filter(r => r.type === 'COMPONENT').map(r => r.head.id));
+    assert(pageAttrs.every(r => compIds.has(r.body.parentId)
         || (r.body.key === 'NET' && wireGroupIds.has(r.body.parentId))),
       'page ATTRs belong to a COMPONENT (or a NET attr to its WIRE/BUS group)');
     const netAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'NET');
@@ -324,7 +324,8 @@ function main() {
     const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 1);
     assert(ncLines.length === 2 && ncLines[0].body.lineGroup && ncLines[0].body.lineGroup === ncLines[1].body.lineGroup,
       'no_connect becomes two LINE records sharing a group id');
-    assert(pageDoc.records.some(r => r.type === 'NETLABEL' && r.body.value === 'GLOB'), 'global_label becomes a NETLABEL');
+    assert(pageDoc.records.some(r => r.type === 'ATTR' && r.body.key === 'Global Net Name' && r.body.value === 'GLOB'),
+      'global_label becomes a global net flag (Global Net Name)');
     const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
     assert(txt && Math.abs(txt.body.x - kicadToSchUnit(40)) < 0.01 && txt.body.y < 0 && txt.body.fontSize === 7.87,
       'text becomes a TEXT record in flipped 0.254 mm units (2 mm font = 7.87 units)');
@@ -341,8 +342,8 @@ function main() {
     // is anchored to the inner A4 border instead of hanging outside it.
     const framePolys = pageDoc.records.filter(r => r.type === 'POLY' && Array.isArray(r.body.points));
     assert(framePolys.length > 10, 'drawing sheet frame/table is emitted as POLY records', `polys=${framePolys.length}`);
-    assert(pageDoc.records.filter(r => r.type === 'WIRE').length === 1,
-      'drawing sheet lines are not emitted as WIRE records');
+    assert(pageDoc.records.filter(r => r.type === 'WIRE').length === 2,
+      'drawing sheet lines are POLY, not WIRE (only the sample wire + one label stub)');
     const framePt = (x, y) => framePolys.some(r => r.body.points.some(p => Math.abs(p.x - x) < 0.01 && Math.abs(p.y - y) < 0.01));
     assert(framePt(kicadToSchUnit(297 - 12), flipYSch(210 - 12, 825)),
       'title block bottom-right sits on the inner A4 border');

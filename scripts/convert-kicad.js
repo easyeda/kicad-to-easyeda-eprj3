@@ -750,13 +750,28 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       if (!groupId) groupId = emitPinStub(toSch(x), pageY(y));
       pageRecords.push(pageAttr(groupId, ++ticket, 'NET', val, toSch(x), pageY(y), 'LEFT_BOTTOM', { valueVisible: true }));
     } else if (head === 'global_label') {
+      // Global labels are global net identifiers: EasyEDA net flags merge by
+      // name across the whole design (the standalone NETLABEL record is only
+      // a graphic and does not join nets).
       const [x, y] = findAtXY(node);
       const val = findValue(node);
+      if (!val) continue;
+      const d = ensureNetflagDoc(val);
+      const X = toSch(x), Y = pageY(y);
+      const compId = randId();
       ticket++;
       pageRecords.push({
-        head: { type: 'NETLABEL', ticket, id: randId() },
-        body: { x: toSch(x), y: pageY(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 5, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
+        head: { type: 'COMPONENT', ticket, id: compId },
+        body: { partId: MAGIC_PART_ID, x: X, y: Y, rotation: 0, isMirror: false,
+          attrs: { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }, zIndex: ++componentZ }
       });
+      const vis = { fontSize: null, keyVisible: null, valueVisible: null };
+      pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', d.symUuid, X, Y + 10, null, vis));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', d.devUuid));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
+      pageRecords.push(pageAttr(compId, ++ticket, 'Name', val, X, Y + 10, 'CENTER_TOP', vis));
+      pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', val, X, Y + 10, 'CENTER_TOP', vis));
+      emitPinStub(X, Y);
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
       const val = findValue(node);
