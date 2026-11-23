@@ -190,6 +190,14 @@ async function main() {
     convertSchematic(abs, file, sch, sheet, {
       projectName, pageCount, project, nameByFile, sheetNodes: sheetNodesByFile.get(abs) || []
     });
+    // The parent page registered this schematic's block symbol; the client
+    // keeps that symbol inside the schematic's own .ecfg document.
+    const ownBlock = project.__blockDocs && project.__blockDocs.get(schName);
+    if (ownBlock) {
+      const ecfg = path.join(project.rootDir, 'sch', schName, `${schName}.ecfg`);
+      fs.appendFileSync(ecfg,
+        ownBlock.map(r => JSON.stringify(r.head) + '||' + JSON.stringify(r.body) + '|').join('\n') + '\n');
+    }
     project.save();
     console.log(`  sch: ${path.basename(abs)} -> ${file}`);
   }
@@ -413,11 +421,20 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         }
         return { name: p.name, number: i + 1, type: p.type, x: lx, y: ly, rotation: rot, length: 10 };
       });
-      libDocs.push(
+      // The placed block component references an embedded copy in the parent
+      // page; the child schematic's .ecfg stores the schematic's own block
+      // symbol (the CBB interface). The two copies must use different document
+      // uuids or the CLI rejects the project as a duplicate document.
+      const blockDocRecords = [
         docHead('SYMBOL', blockUuid),
         metaRec(childName, { docType: 17 }),
         ...buildBlockSymbolRecords({ title: childName, width: W, height: H, pins })
-      );
+      ];
+      libDocs.push(...blockDocRecords);
+      const ecfgRecs = JSON.parse(JSON.stringify(blockDocRecords));
+      ecfgRecs[0].body.uuid = uuid(16);
+      project.__blockDocs = project.__blockDocs || new Map();
+      if (!project.__blockDocs.has(childName)) project.__blockDocs.set(childName, ecfgRecs);
     }
     const compId = randId();
     const cx = toSch(info.x) + W / 2;
@@ -736,6 +753,18 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const props = collectProperties(node);
       const unitArr = findSub(node, 'unit');
       const unit = unitArr ? parseInt(unitArr[0], 10) || 1 : 1;
+      // PWR_FLAG is KiCad's ERC-only marker: it attaches to an existing net but
+      // does not name one. Converting it as an EDA power flag (Name=PWR_FLAG)
+      // ties together every net that carries a flag (GND/VCC/VPP short).
+      const shortLib = libId.split(':').pop();
+      const libNode = libNodes[libId] || libNodes[shortLib];
+      const probeSym = libNode ? nodeSymbol(libNode, unit) : null;
+      const powerish = /^power:/i.test(libId) || !!(probeSym && probeSym.isPower);
+      const flagName = (probeSym && probeSym.name) || shortLib;
+      if (powerish && /PWR_FLAG/i.test(flagName)) {
+        warn(`schematic: ERC flag ${props.Reference || flagName} skipped (not a net identifier)`);
+        continue;
+      }
       const lib = ensureSymbolDoc(libId, props.Footprint || '', unit);
       const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');

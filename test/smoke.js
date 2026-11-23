@@ -639,10 +639,25 @@ function main() {
         (pin power_in line (at 0 0 270) (length 0) (name "GND") (number "1"))
       )
     )
+    (symbol "power:PWR_FLAG" (power) (pin_numbers hide)
+      (property "Reference" "#FLG" (at 0 6.35 0))
+      (property "Value" "PWR_FLAG" (at 0 3.81 0))
+      (symbol "PWR_FLAG_0_1"
+        (polyline (pts (xy 0 0) (xy 0 1.27)) (stroke (width 0) (type default)) (fill (type none)))
+      )
+      (symbol "PWR_FLAG_1_1"
+        (pin power_out line (at 0 0 90) (length 0) (name "~") (number "1"))
+      )
+    )
   )
   (symbol (lib_id "custom_pads_schlib:GND") (at 50 60 0) (unit 1)
     (property "Reference" "#PWR01" (at 50 66 0))
     (property "Value" "GND" (at 50 63 0))
+    (property "Footprint" "" (at 50 60 0))
+  )
+  (symbol (lib_id "power:PWR_FLAG") (at 50 60 0) (unit 1)
+    (property "Reference" "#FLG01" (at 50 55 0))
+    (property "Value" "PWR_FLAG" (at 50 57 0))
     (property "Footprint" "" (at 50 60 0))
   )
 )`;
@@ -674,6 +689,13 @@ function main() {
     assert(!!gnet && gnet.body.value === 'GND',
       'power symbol carries the Global Net Name ATTR',
       gnet && gnet.body.value);
+    const powerComps = powerPage.records.filter(r => r.type === 'COMPONENT' && r.body.partId === 'pid8a0e77bacb214e'
+      && r.body.zIndex !== null);
+    assert(powerComps.length === 1,
+      'PWR_FLAG ERC markers are skipped (only the GND power flag remains)',
+      `comps=${powerComps.length}`);
+    assert(!powerEsch.some(r => r.type === 'ATTR' && r.body && r.body.value === 'PWR_FLAG'),
+      'no PWR_FLAG net identifier is emitted (would short every flagged net)');
 
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');
