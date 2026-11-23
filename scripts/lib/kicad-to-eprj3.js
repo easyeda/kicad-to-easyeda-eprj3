@@ -688,13 +688,18 @@ const SHEET_PIN_TYPE = {
   open_emitter: 'Undefined', no_connect: 'Undefined'
 };
 function buildBlockSymbolRecords(block) {
-  const partId = '1';
+  // The CBB block symbol's PART id must be a full 16-hex id: the client links
+  // a placed block symbol to its schematic (and expands instances in the
+  // netlist as REF$CBBn) only for that form. A short id such as '1' still
+  // renders, but the CBB never instantiates (no REF$CBBn in the netlist).
+  const partId = block.partId || '1';
   const records = [];
   let ticket = 1;
   const r2 = v => Math.round(v * 100) / 100;
   records.push({ head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
     body: { originX: 0, originY: 0, yAxisDirection: 'up' } });
-  records.push({ head: { type: 'PART', ticket: ++ticket, id: partId }, body: { title: '1' } });
+  records.push({ head: { type: 'PART', ticket: ++ticket, id: partId },
+    body: { title: block.title ? block.title + '.1' : '1' } });
   for (const pin of block.pins || []) {
     const pinId = 'e' + randId();
     const rot = pin.rotation || 0;
@@ -736,7 +741,9 @@ function buildBlockSymbolRecords(block) {
     strokeColor: null, strokeWidth: 1, strokeStyle: 'SOLID',
     fillColor: null, fillStyle: 'NONE', yAxisDirection: 'up'
   } });
-  for (const [key, value] of [['Name', block.title || ''], ['Designator', '?']]) {
+  const partAttrs = [['Name', block.title || ''], ['Designator', '?']];
+  if (block.symbolUuid) partAttrs.push(['Symbol', block.symbolUuid]);
+  for (const [key, value] of partAttrs) {
     ticket++;
     records.push({ head: { type: 'ATTR', ticket, id: 'e' + randId() }, body: {
       partId, groupId: '', locked: false, zIndex: ticket, parentId: partId,
@@ -757,33 +764,47 @@ const NETPORT_TYPE = {
   input: 'IN', output: 'OUT', bidirectional: 'BI', tri_state: 'Undefined',
   passive: 'Undefined', unspecified: 'Undefined'
 };
+// Built-in net-port library ids. The client resolves a net port component
+// through the SYMBOL document's PART `Symbol` attribute, which must name the
+// built-in library item (not the embedded document uuid); otherwise the
+// component has no pins at all, and CBB netlist expansion fails.
+const NETPORT_LIBRARY = {
+  IN: { symbol: '9efc5969ac6c4c83b5123274296715d2', device: 'd1791174cc834e86a381cf4678cd8f5f', title: 'Netport-IN' },
+  OUT: { symbol: '675cb8e8f90e4d969086d29fccac9571', device: '675cb8e8f90e4d969086d29fccac9571', title: 'Netport-OUT' }
+};
+const EPRJ_LIBRARY_ID = '0819f05c4eef4c71ace90d822a990e87';
 const NETPORT_SHAPE = {
   OUT: [[0, 0], [0, 2.5], [-2.5, 2.5], [-5, 0], [-2.5, -2.5], [0, -2.5], [0, 0]],
   Undefined: [[0, 0], [-2.5, 2.5], [-5, 2.5], [-5, 0], [-5, -2.5], [-2.5, -2.5], [0, 0]],
   IN: [[0, 0], [0, 2.5], [-2.5, 2.5], [-5, 0], [-2.5, -2.5], [0, -2.5], [0, 0]]
 };
 function buildNetportSymbolRecords(port) {
+  // Net ports belong to the built-in part id: the CBB interface binds the
+  // child page's ports to the block symbol pins through it (a generic '1'
+  // part id leaves the ports as plain symbols, so no CBB expansion happens).
+  const partId = port.partId || '1';
+  const lib = NETPORT_LIBRARY[port.type === 'OUT' ? 'OUT' : 'IN'];
   const records = [];
   let ticket = 1;
   records.push({ head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
     body: { originX: 0, originY: 0, yAxisDirection: 'up' } });
-  records.push({ head: { type: 'PART', ticket: ++ticket, id: '1' }, body: { title: '1' } });
+  records.push({ head: { type: 'PART', ticket: ++ticket, id: partId }, body: { title: '' } });
   const type = port.type || 'Undefined';
   const pts = NETPORT_SHAPE[type] || NETPORT_SHAPE.Undefined;
   records.push({ head: { type: 'POLY', ticket: ++ticket, id: 'e' + randId() }, body: {
-    partId: '1', groupId: '', locked: false, zIndex: ticket,
+    partId, groupId: '', locked: false, zIndex: ticket,
     points: pts.map(([x, y]) => ({ x, y })), closed: true,
     strokeColor: null, strokeWidth: 1, strokeStyle: 'SOLID',
     fillColor: null, fillStyle: 'NONE', yAxisDirection: 'up'
   } });
   const pinId = 'e' + randId();
   records.push({ head: { type: 'PIN', ticket: ++ticket, id: pinId }, body: {
-    partId: '1', groupId: '', locked: false, zIndex: ticket, display: true,
-    x: 0, y: 0, length: 0, rotation: 0, color: null, pinShape: 'NONE', yAxisDirection: 'up'
+    partId, groupId: '', locked: false, zIndex: ticket, display: true,
+    x: 0, y: 0, length: 10, rotation: 180, color: null, pinShape: 'NONE', yAxisDirection: 'up'
   } });
   const attr = (key, value, parentId, visible, x, y) => {
     records.push({ head: { type: 'ATTR', ticket: ++ticket, id: 'e' + randId() }, body: {
-      partId: '1', groupId: '', locked: false, zIndex: ticket, parentId,
+      partId, groupId: '', locked: false, zIndex: ticket, parentId,
       key, value, keyVisible: false, valueVisible: visible,
       x: x == null ? null : x, y: y == null ? null : y, rotation: 0,
       color: null, fillColor: null, fontFamily: null, fontSize: 6.75,
@@ -794,12 +815,16 @@ function buildNetportSymbolRecords(port) {
   attr('Pin Name', '', pinId, false, null, null);
   attr('Pin Number', '1', pinId, false, null, null);
   attr('Pin Type', type, pinId, false, null, null);
-  attr('Name', port.name || '', '1', false, null, null);
-  attr('Designator', '?', '1', false, null, null);
+  attr('Name', port.name || '', partId, false, null, null);
+  attr('Designator', '?', partId, false, null, null);
+  // Must be the built-in library id, not the document uuid (see
+  // NETPORT_LIBRARY): the client loads the port's pin from that library item.
+  attr('Symbol', lib.symbol, partId, false, null, null);
   return records;
 }
 
 module.exports = {
+  NETPORT_LIBRARY, EPRJ_LIBRARY_ID,
   buildSymbolRecords, buildFootprintRecords, footprintPadRecord, buildBlockSymbolRecords, buildNetportSymbolRecords,
   kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP

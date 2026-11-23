@@ -35,7 +35,8 @@ const fs = require('fs');
 const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts, extractPads } = require('./lib/kicad');
 const {
-  buildSymbolRecords, buildFootprintRecords, buildBlockSymbolRecords, buildNetportSymbolRecords, kicadToEprj3, flipY,
+  buildSymbolRecords, buildFootprintRecords, buildBlockSymbolRecords, buildNetportSymbolRecords,
+  NETPORT_LIBRARY, EPRJ_LIBRARY_ID, kicadToEprj3, flipY,
   kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
@@ -158,9 +159,11 @@ async function main() {
   if (preferred && roots.includes(preferred)) roots = [preferred, ...roots.filter(r => r !== preferred)];
   if (!roots.length) roots = schAbs.slice();
 
-  // One EasyEDA schematic per used KiCad sheet *instance*. A sheet file placed
-  // twice (reused hierarchy) is instantiated twice, so each instance keeps its
-  // own designators and connectivity instead of sharing one page.
+  // One EasyEDA schematic per unique KiCad sheet *file*. A file placed by
+  // several sheets becomes a single CBB (reuse module) schematic; every sheet
+  // node on the parent page places its own block symbol, so EasyEDA
+  // instantiates the page per placement (REF$CBB1, REF$CBB2, ...) and expands
+  // those instances in the netlist.
   const usedNames = new Set();
   const sanitize = s => (s || 'Sheet').replace(/[^\w.-]+/g, '_');
   const uniqueName = base => {
@@ -177,35 +180,42 @@ async function main() {
     for (const [k, v] of readLegacySymbolInstances(abs)) legacyRefs.set(k, v);
   }
   const pages = [];
-  const seenPaths = new Set();
-  const walk = (abs, instancePath, schName, legacyPath) => {
+  const pageByFile = new Map();
+  const nameCache = new Map();
+  const queue = [];
+  const pageNameOf = abs => {
+    if (!nameCache.has(abs)) nameCache.set(abs, uniqueName(path.basename(abs, '.kicad_sch')));
+    return nameCache.get(abs);
+  };
+  const seed = (abs, instancePath, legacyPath, isChild) => {
+    if (pageByFile.has(abs)) return; // the first instance defines the shared page
+    const page = { abs, schName: pageNameOf(abs), instancePath, legacyPath, isChild, children: [] };
+    pageByFile.set(abs, page);
+    pages.push(page);
     const nodes = sheetNodesByFile.get(abs) || [];
-    const children = nodes.map(node => ({ node, schName: null }));
-    pages.push({ abs, schName, instancePath, legacyPath, children });
-    for (let i = 0; i < nodes.length; i++) {
-      const n = nodes[i];
-      if (!n.target) continue;
-      const childPath = instancePath + '/' + (n.uuid || uuid(8));
-      if (seenPaths.has(childPath)) continue;
-      seenPaths.add(childPath);
-      // Name pages after the sheet file (matching KiCad's file-based page
-      // identity); reused files get a _2/_3 suffix per instance.
-      const childName = uniqueName(path.basename(n.target, '.kicad_sch'));
-      children[i].schName = childName;
-      const childLegacy = legacyPath + (n.uuid || '') + '/';
-      walk(n.target, childPath, childName, childLegacy);
+    for (const n of nodes) {
+      page.children.push({ node: n, schName: n.target ? pageNameOf(n.target) : null });
+      if (n.target) queue.push({
+        abs: n.target,
+        instancePath: instancePath + '/' + (n.uuid || ''),
+        legacyPath: legacyPath + (n.uuid || '') + '/',
+        isChild: true
+      });
     }
   };
-  for (const abs of roots) {
-    const path0 = '/' + (rootUuidOf(abs) || uuid(8));
-    if (seenPaths.has(path0)) continue;
-    seenPaths.add(path0);
-    walk(abs, path0, uniqueName(path.basename(abs, '.kicad_sch')), '/');
+  for (const abs of roots) seed(abs, '/' + (rootUuidOf(abs) || uuid(8)), '/', false);
+  while (queue.length) {
+    const item = queue.shift();
+    seed(item.abs, item.instancePath, item.legacyPath, item.isChild);
   }
   // Files not reachable from any root still get converted (standalone sheets).
   for (const abs of schAbs) {
-    if (pages.some(p => p.abs === abs)) continue;
-    walk(abs, '/' + (rootUuidOf(abs) || uuid(8)), uniqueName(path.basename(abs, '.kicad_sch')), '/');
+    if (pageByFile.has(abs)) continue;
+    seed(abs, '/' + (rootUuidOf(abs) || uuid(8)), '/', false);
+    while (queue.length) {
+      const item = queue.shift();
+      seed(item.abs, item.instancePath, item.legacyPath, item.isChild);
+    }
   }
 
   const pageCount = pages.length;
@@ -219,13 +229,13 @@ async function main() {
       projectName, pageCount, project, instancePath: page.instancePath,
       legacyPath: page.legacyPath, legacyRefs, sheetNodes: page.children
     });
-    // The parent page registered this schematic's block symbol; the client
-    // keeps that symbol inside the schematic's own .ecfg document.
-    const ownBlock = project.__blockDocs && project.__blockDocs.get(schName);
-    if (ownBlock) {
+    // A CBB child must not keep a schematic-config .ecfg: when the .ecfg's
+    // first document is the SCH config the client stops expanding the CBB in
+    // the netlist. The block symbol lives in the parent page and in
+    // profile.blockSymbols; the client rebuilds the child config on open.
+    if (page.isChild) {
       const ecfg = path.join(project.rootDir, 'sch', schName, `${schName}.ecfg`);
-      fs.appendFileSync(ecfg,
-        ownBlock.map(r => JSON.stringify(r.head) + '||' + JSON.stringify(r.body) + '|').join('\n') + '\n');
+      fs.writeFileSync(ecfg, '');
     }
     project.save();
     console.log(`  sch: ${path.basename(abs)} -> ${file}`);
@@ -339,7 +349,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     // (power) marker in the lib_symbols entry is authoritative, not the
     // "power:" lib_id prefix.
     const isPower = forcedPower || /^power:/i.test(libId) || !!(libSym && libSym.isPower);
-    const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
+    const netName = isPower
+      // KiCad names a power net after the power pin, not after the library
+      // symbol's Value (project libs often carry a stale/translated Value:
+      // lib "+3,3V" whose pin is "+3.3V").
+      ? ((libSym && (libSym.pins || []).find(p => p.electric === 'power_in' && p.name) || {}).name
+        || (libSym && libSym.properties && libSym.properties.Value) || shortName)
+      : null;
 
     // Multi-unit symbols must live in ONE SYMBOL document with one PART per
     // unit (EDA multi-part). Separate docs with the same partId made the
@@ -428,6 +444,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   // name to the child schematic. The block symbol is appended to the page's
   // embedded docs; the rectangle is placed as a COMPONENT on this page.
   const embeddedBlocks = new Map();
+  const embeddedPartIds = new Map();
   const emitSheetBlock = entry => {
     const info = entry && entry.node;
     if (!info || !info.target) {
@@ -445,6 +462,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     if (!blockUuid) {
       blockUuid = uuid(16);
       embeddedBlocks.set(childName, blockUuid);
+      // Full 16-hex PART id: the client only instantiates the CBB (netlist
+      // expansion as REF$CBBn) when the block symbol's PART id has this form.
+      embeddedPartIds.set(childName, uuid(16));
       project.profile.profile.blockSymbols = project.profile.profile.blockSymbols || {};
       project.profile.profile.blockSymbols[blockUuid] = {
         uuid: blockUuid, title: childName, docType: 17, source: '',
@@ -474,13 +494,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const blockDocRecords = [
         docHead('SYMBOL', blockUuid),
         metaRec(childName, { docType: 17 }),
-        ...buildBlockSymbolRecords({ title: childName, width: W, height: H, pins })
+        ...buildBlockSymbolRecords({
+          title: childName, width: W, height: H, pins,
+          partId: embeddedPartIds.get(childName), symbolUuid: blockUuid
+        })
       ];
       libDocs.push(...blockDocRecords);
-      const ecfgRecs = JSON.parse(JSON.stringify(blockDocRecords));
-      ecfgRecs[0].body.uuid = uuid(16);
-      project.__blockDocs = project.__blockDocs || new Map();
-      if (!project.__blockDocs.has(childName)) project.__blockDocs.set(childName, ecfgRecs);
     }
     const compId = randId();
     const cx = toSch(info.x) + W / 2;
@@ -490,7 +509,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     pageRecords.push({
       head: { type: 'COMPONENT', ticket, id: compId },
       body: {
-        partId: '1', x: cx, y: cy, rotation: 0, isMirror: false,
+        partId: embeddedPartIds.get(childName) || '1', x: cx, y: cy, rotation: 0, isMirror: false,
         attrs: {}, zIndex: ++componentZ
       }
     });
@@ -622,10 +641,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     if (!raw.length) return emittedWireGroups;
     const junctions = [];
     for (const node of root.slice(1)) {
-      if (Array.isArray(node) && node[0].v === 'junction') {
-        const at = findSub(node, 'at');
-        if (at) junctions.push([parseFloat(at[0]), parseFloat(at[1])]);
-      }
+      if (!Array.isArray(node)) continue;
+      const h = node[0] && node[0].v;
+      // Labels often sit mid-wire; the wire is split there so the label/net
+      // port pin lands on a wire endpoint (EasyEDA only joins at endpoints).
+      if (!['junction', 'label', 'global_label', 'hierarchical_label'].includes(h)) continue;
+      const at = findSub(node, 'at');
+      if (at) junctions.push([parseFloat(at[0]), parseFloat(at[1])]);
     }
     const segs = [];
     for (const s of raw) {
@@ -723,14 +745,24 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     if (!docs) {
       const symUuid = uuid(16);
       const devUuid = uuid(16);
+      const lib = NETPORT_LIBRARY[type === 'OUT' ? 'OUT' : 'IN'];
       libDocs.push(
         docHead('SYMBOL', symUuid),
-        metaRec(name, { docType: 19 }),
-        ...buildNetportSymbolRecords({ name, type }),
+        metaRec(lib.title, {
+          docType: 19, description: lib.title,
+          source: lib.symbol + '|' + EPRJ_LIBRARY_ID
+        }),
+        ...buildNetportSymbolRecords({ name, type, partId: MAGIC_PART_ID, symbolUuid: symUuid }),
         docHead('DEVICE', devUuid),
-        metaRec(name, {
-          images: [],
-          attributes: { Symbol: symUuid, Footprint: '', Description: '', Name: name, 'Add into BOM': 'no' }
+        metaRec(lib.title, {
+          tags: ['特殊器件', '网络端口'],
+          source: lib.device + '|' + EPRJ_LIBRARY_ID,
+          images: [''],
+          attributes: {
+            Symbol: symUuid, Description: lib.title, Name: '', Relevance: '',
+            SymbolName: JSON.stringify({ name: lib.title, uuid: symUuid, source: '' }),
+            'Add into BOM': 'no'
+          }
         })
       );
       docs = { symUuid, devUuid, type };
@@ -742,12 +774,18 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     ticket++;
     pageRecords.push({
       head: { type: 'COMPONENT', ticket, id: compId },
-      body: { partId: '1', x: cx, y: cy, rotation, isMirror: false, attrs: {}, zIndex: ++componentZ }
+      body: { partId: MAGIC_PART_ID, x: cx, y: cy, rotation, isMirror: false, attrs: {}, zIndex: ++componentZ }
     });
     const ax = cx - 7.5;
     pageRecords.push(pageAttr(compId, ++ticket, 'Device', docs.devUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
     pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', docs.symUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
     pageRecords.push(pageAttr(compId, ++ticket, 'Name', name, ax, cy, 'RIGHT_MIDDLE'));
+    // A net port names the wire it sits on (mid-wire labels are split before
+    // grouping), which is also how a CBB instance resolves this net.
+    const portGroup = wireGroupAt(x, y);
+    if (portGroup) {
+      pageRecords.push(pageAttr(portGroup, ++ticket, 'NET', name, cx, cy, 'CENTER_TOP', { valueVisible: false }));
+    }
     // A hier label may attach directly to a pin in KiCad; EasyEDA needs a wire.
     emitPinStub(cx, cy);
   };

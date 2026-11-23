@@ -542,8 +542,15 @@ function main() {
     const blockRect = blockDoc && blockDoc.records.find(r => r.type === 'RECT');
     assert(!!blockRect && Math.abs(Math.abs(blockRect.body.dotX2 - blockRect.body.dotX1) - kicadToSchUnit(30)) < 0.01,
       'block symbol rectangle matches the KiCad sheet size');
-    const blockComp = rootPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === '1');
+    const blockComp = rootPage.records.find(r => r.type === 'COMPONENT'
+      && rootPage.records.some(a => a.type === 'ATTR' && a.body.parentId === r.head.id
+        && a.body.key === 'Symbol' && a.body.value === blockEntries[0].uuid));
     assert(!!blockComp, 'the block symbol is placed as a COMPONENT on the parent page');
+    const blockPart = blockDoc && blockDoc.records.find(r => r.type === 'PART');
+    assert(!!blockComp && /^[0-9a-f]{16}$/.test(blockComp.body.partId)
+      && !!blockPart && blockPart.head.id === blockComp.body.partId,
+      'block symbol PART id is a full 16-hex id shared by doc and component',
+      blockComp && blockComp.body.partId);
     const blockAttrs = rootPage.records.filter(r => r.type === 'ATTR' && blockComp && r.body.parentId === blockComp.head.id);
     const attrVal = k => (blockAttrs.find(a => a.body.key === k) || {}).body?.value;
     assert(attrVal('Symbol') === blockEntries[0].uuid && attrVal('Name') === 'child',
@@ -584,13 +591,24 @@ function main() {
     run([SCRIPTS + '/convert-kicad.js', 'convert', reuseDir, reuseOut, '--project-name', 'reuseRoot']);
     const reuseNames = Object.values(JSON.parse(fs.readFileSync(path.join(reuseOut, 'reuseRoot.eprj3'), 'utf8'))
       .profile.schematics).map(s => s.name);
-    assert(reuseNames.includes('reused') && reuseNames.includes('reused_2'),
-      'a sheet file placed twice becomes two schematic instances', reuseNames.join(','));
+    assert(reuseNames.includes('reused') && !reuseNames.includes('reused_2'),
+      'a reused sheet file stays one CBB schematic (instances expand in EDA)', reuseNames.join(','));
     const desigOf = name => docSegments(readRecords(path.join(reuseOut, 'sch', name, name + '.esch2')))
       .pop().records.filter(r => r.type === 'ATTR' && r.body.key === 'Designator').map(r => r.body.value);
-    assert(desigOf('reused').join(',') === 'R1' && desigOf('reused_2').join(',') === 'R2',
-      'each reused-sheet instance gets its own per-path designator',
-      desigOf('reused').join(',') + ' / ' + desigOf('reused_2').join(','));
+    assert(desigOf('reused').join(',') === 'R1',
+      'the shared CBB page carries the first instance designator (EDA suffixes $CBBn)',
+      desigOf('reused').join(','));
+    const reuseRootPage = docSegments(readRecords(path.join(reuseOut, 'sch', 'reuseRoot', 'reuseRoot.esch2'))).pop();
+    const cbbComps = reuseRootPage.records.filter(r => r.type === 'COMPONENT'
+      && reuseRootPage.records.some(a => a.type === 'ATTR' && a.body.parentId === r.head.id
+        && a.body.key === 'Designator' && /^CBB\d+$/.test(String(a.body.value))));
+    const cbbAttrsOf = id => reuseRootPage.records.filter(r => r.type === 'ATTR' && r.body.parentId === id);
+    const cbbSymOf = id => (cbbAttrsOf(id).find(a => a.body.key === 'Symbol') || {}).body?.value;
+    assert(cbbComps.length === 2 && cbbSymOf(cbbComps[0].head.id) === cbbSymOf(cbbComps[1].head.id),
+      'both sheet placements reference the same CBB block symbol', String(cbbComps.length));
+    const reuseEcfg = path.join(reuseOut, 'sch', 'reused', 'reused.ecfg');
+    assert(fs.existsSync(reuseEcfg) && fs.readFileSync(reuseEcfg, 'utf8').trim() === '',
+      'a CBB child .ecfg is left empty for the client to rebuild');
     // KiCad <=6 stores designators in a root-level (symbol_instances) table.
     const legacySch = `(kicad_sch (version 20220404) (generator eeschema)
   (uuid "legacy-root")
@@ -620,9 +638,11 @@ function main() {
     const childPage = childDocs[childDocs.length - 1];
     const netportDoc = childDocs.find(d => d.head.body.docType === 'SYMBOL'
       && (d.records.find(r => r.type === 'META') || {}).body?.docType === 19);
-    assert(!!netportDoc && netportDoc.records.find(r => r.type === 'META').body.title === 'A',
-      'hierarchical_label becomes a net port document named after the net');
-    const netportComp = childPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === '1');
+    assert(!!netportDoc && /^Netport-/.test(netportDoc.records.find(r => r.type === 'META').body.title),
+      'hierarchical_label becomes a built-in net port symbol');
+    const netportComp = childPage.records.find(r => r.type === 'COMPONENT'
+      && childPage.records.some(a => a.type === 'ATTR' && a.body.parentId === r.head.id
+        && a.body.key === 'Symbol' && a.body.value === netportDoc.head.body.uuid));
     const netportAttrs = netportComp ? childPage.records.filter(r => r.type === 'ATTR' && r.body.parentId === netportComp.head.id) : [];
     const nattr = k => (netportAttrs.find(a => a.body.key === k) || {}).body?.value;
     assert(!!netportComp && nattr('Symbol') === netportDoc.head.body.uuid && nattr('Name') === 'A',
