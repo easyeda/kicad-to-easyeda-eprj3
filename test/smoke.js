@@ -542,8 +542,20 @@ function main() {
       'block symbol COMPONENT links Symbol/Name to the block document');
     assert(attrVal('Sheetname') === 'childSheet' && attrVal('Sheetfile') === 'child.kicad_sch',
       'block symbol keeps the KiCad Sheetname/Sheetfile metadata');
+    const childEsch = readRecords(path.join(hierOut, 'sch', 'child', 'child.esch2'));
+    const childDocs = docSegments(childEsch);
+    const childPage = childDocs[childDocs.length - 1];
+    const netportDoc = childDocs.find(d => d.head.body.docType === 'SYMBOL'
+      && (d.records.find(r => r.type === 'META') || {}).body?.docType === 19);
+    assert(!!netportDoc && netportDoc.records.find(r => r.type === 'META').body.title === 'A',
+      'hierarchical_label becomes a net port document named after the net');
+    const netportComp = childPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === '1');
+    const netportAttrs = netportComp ? childPage.records.filter(r => r.type === 'ATTR' && r.body.parentId === netportComp.head.id) : [];
+    const nattr = k => (netportAttrs.find(a => a.body.key === k) || {}).body?.value;
+    assert(!!netportComp && nattr('Symbol') === netportDoc.head.body.uuid && nattr('Name') === 'A',
+      'net port component links Symbol/Name to the child net');
     // Embedded docs must not collide across pages (CLI refuses to open then).
-    const frameUuids = [rootEsch, readRecords(path.join(hierOut, 'sch', 'child', 'child.esch2'))].map(rs => {
+    const frameUuids = [rootEsch, childEsch].map(rs => {
       const ds = docSegments(rs);
       const f = ds.find(d => d.head.body.docType === 'SYMBOL'
         && (d.records.find(r => r.type === 'META') || {}).body?.docType === 20);
@@ -620,6 +632,21 @@ function main() {
     const myRes = syms.find(s => s.name === 'MY_RES');
     assert(!!myRes, 'kicad parser finds the top-level symbol');
     assert(myRes && myRes.pins.length === 2, 'kicad parser merges pins from nested unit symbols', `pins=${myRes && myRes.pins.length}`);
+    // De Morgan body styles: "NAME_<unit>_<style>" - style 2 must not be merged
+    // into style 1, otherwise every pin is duplicated (broken connectivity and
+    // OVERLAPPIN DRC errors).
+    const styleSym = parseSex(`(symbol "MU" (symbol "MU_1_1"
+      (pin passive line (at 0 0 0) (length 1) (name "A") (number "1")))
+      (symbol "MU_1_2"
+      (pin passive line (at 0 0 0) (length 1) (name "A") (number "1")))
+      (symbol "MU_2_1"
+      (pin passive line (at 0 0 0) (length 1) (name "B") (number "2"))))`);
+    const mu1 = nodeSymbol(styleSym, 1);
+    const mu2 = nodeSymbol(styleSym, 2);
+    assert(mu1.pins.length === 1 && mu1.pins[0].number === '1',
+      'unit 1 style 1 pins only (De Morgan style 2 dropped)', `pins=${mu1.pins.length}`);
+    assert(mu2.pins.length === 1 && mu2.pins[0].number === '2',
+      'other units are selected by unit number', `pins=${mu2.pins.length}`);
     assert(myRes && myRes.shapes.length === 3, 'kicad parser merges shapes from nested unit symbols');
     assert(myRes && myRes.properties.Value === 'MY_RES', 'kicad parser reads properties');
 

@@ -83,7 +83,7 @@ function extractArc(node) {
   return out;
 }
 
-function nodeSymbol(node) {
+function nodeSymbol(node, unit = 1) {
   const out = { name: '', properties: {}, pins: [], shapes: [], hidePinNumbers: false, hidePinNames: false, isPower: false };
   if (!Array.isArray(node) || !node.length || node[0].v !== 'symbol') return out;
   out.name = node[1]?.v || '';
@@ -96,8 +96,18 @@ function nodeSymbol(node) {
       // when they live in a project library (lib_id is not "power:...").
       out.isPower = true;
     } else if (head === 'symbol') {
-      // KiCad 6+ nests per-unit graphics in (symbol "NAME_0_1") / (symbol "NAME_1_1")
-      const sub = nodeSymbol(it);
+      // KiCad 6+ nests per-unit graphics in (symbol "NAME_<unit>_<style>").
+      // Unit 0 is shared by all units; style 2 is the De Morgan alternate
+      // representation and must NOT be merged with style 1 (doing so duplicated
+      // every pin and broke connectivity / DRC).
+      const subName = it[1]?.v || '';
+      const m = /_(\d+)_(\d+)$/.exec(subName);
+      if (m) {
+        const u = parseInt(m[1], 10), style = parseInt(m[2], 10);
+        if (style !== 1) continue;
+        if (u !== 0 && u !== unit) continue;
+      }
+      const sub = nodeSymbol(it, unit);
       out.pins.push(...sub.pins);
       out.shapes.push(...sub.shapes);
       if (sub.hidePinNumbers) out.hidePinNumbers = true;
@@ -189,14 +199,14 @@ function extractPts(node) {
   return pts;
 }
 
-function parseSymbolFile(path) {
+function parseSymbolFile(path, unit = 1) {
   const text = fs.readFileSync(path, 'utf8');
   const root = parse(text);
   // root = (kicad_symbol_lib (version ...) (generator ...) (symbol "x" ...) (symbol "y" ...))
   const symbols = [];
   for (const node of root.slice(1)) {
     if (Array.isArray(node) && node[0].v === 'symbol') {
-      symbols.push(nodeSymbol(node));
+      symbols.push(nodeSymbol(node, unit));
     }
   }
   return symbols;

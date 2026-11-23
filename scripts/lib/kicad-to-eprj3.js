@@ -750,8 +750,57 @@ function buildBlockSymbolRecords(block) {
   return records;
 }
 
+// ---- hierarchical net ports (SYMBOL docType 19) ----
+// A KiCad hierarchical_label is the child page's side of a block-symbol pin;
+// converting it to a net port makes the hierarchy electrically connected.
+const NETPORT_TYPE = {
+  input: 'IN', output: 'OUT', bidirectional: 'BI', tri_state: 'Undefined',
+  passive: 'Undefined', unspecified: 'Undefined'
+};
+const NETPORT_SHAPE = {
+  OUT: [[0, 0], [0, 2.5], [-2.5, 2.5], [-5, 0], [-2.5, -2.5], [0, -2.5], [0, 0]],
+  Undefined: [[0, 0], [-2.5, 2.5], [-5, 2.5], [-5, 0], [-5, -2.5], [-2.5, -2.5], [0, 0]],
+  IN: [[0, 0], [0, 2.5], [-2.5, 2.5], [-5, 0], [-2.5, -2.5], [0, -2.5], [0, 0]]
+};
+function buildNetportSymbolRecords(port) {
+  const records = [];
+  let ticket = 1;
+  records.push({ head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
+    body: { originX: 0, originY: 0, yAxisDirection: 'up' } });
+  records.push({ head: { type: 'PART', ticket: ++ticket, id: '1' }, body: { title: '1' } });
+  const type = port.type || 'Undefined';
+  const pts = NETPORT_SHAPE[type] || NETPORT_SHAPE.Undefined;
+  records.push({ head: { type: 'POLY', ticket: ++ticket, id: 'e' + randId() }, body: {
+    partId: '1', groupId: '', locked: false, zIndex: ticket,
+    points: pts.map(([x, y]) => ({ x, y })), closed: true,
+    strokeColor: null, strokeWidth: 1, strokeStyle: 'SOLID',
+    fillColor: null, fillStyle: 'NONE', yAxisDirection: 'up'
+  } });
+  const pinId = 'e' + randId();
+  records.push({ head: { type: 'PIN', ticket: ++ticket, id: pinId }, body: {
+    partId: '1', groupId: '', locked: false, zIndex: ticket, display: true,
+    x: 0, y: 0, length: 0, rotation: 0, color: null, pinShape: 'NONE', yAxisDirection: 'up'
+  } });
+  const attr = (key, value, parentId, visible, x, y) => {
+    records.push({ head: { type: 'ATTR', ticket: ++ticket, id: 'e' + randId() }, body: {
+      partId: '1', groupId: '', locked: false, zIndex: ticket, parentId,
+      key, value, keyVisible: false, valueVisible: visible,
+      x: x == null ? null : x, y: y == null ? null : y, rotation: 0,
+      color: null, fillColor: null, fontFamily: null, fontSize: 6.75,
+      strikeout: false, underline: false, italic: false, fontWeight: false,
+      align: 'LEFT_BOTTOM', yAxisDirection: 'up'
+    } });
+  };
+  attr('Pin Name', '', pinId, false, null, null);
+  attr('Pin Number', '1', pinId, false, null, null);
+  attr('Pin Type', type, pinId, false, null, null);
+  attr('Name', port.name || '', '1', false, null, null);
+  attr('Designator', '?', '1', false, null, null);
+  return records;
+}
+
 module.exports = {
-  buildSymbolRecords, buildFootprintRecords, footprintPadRecord, buildBlockSymbolRecords,
+  buildSymbolRecords, buildFootprintRecords, footprintPadRecord, buildBlockSymbolRecords, buildNetportSymbolRecords,
   kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

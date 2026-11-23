@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts, extractPads } = require('./lib/kicad');
 const {
-  buildSymbolRecords, buildFootprintRecords, buildBlockSymbolRecords, kicadToEprj3, flipY,
+  buildSymbolRecords, buildFootprintRecords, buildBlockSymbolRecords, buildNetportSymbolRecords, kicadToEprj3, flipY,
   kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
@@ -265,13 +265,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   const pageY = v => flipYSch(v, pageH);
 
   // lib_symbols: top-level entries are keyed by full lib_id (e.g. "Device:R")
-  const libs = {};
+  const libNodes = {};
   for (const node of root.slice(1)) {
     if (Array.isArray(node) && node[0].v === 'lib_symbols') {
       for (const symNode of node.slice(1)) {
         if (Array.isArray(symNode) && symNode[0].v === 'symbol') {
-          const sym = nodeSymbol(symNode);
-          if (sym.name) libs[sym.name] = sym;
+          const key = symNode[1]?.v || '';
+          if (key) libNodes[key] = symNode;
         }
       }
     }
@@ -280,11 +280,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   const libDocs = [];
   const usedSymbols = {};
   const usedDevices = {};
-  function ensureSymbolDoc(libId, footprintName) {
-    let sym = usedSymbols[libId];
+  function ensureSymbolDoc(libId, footprintName, unit = 1) {
+    const symKey = libId + '\u0000' + unit;
+    let sym = usedSymbols[symKey];
     if (!sym) {
       const shortName = libId.split(':').pop();
-      const libSym = libs[libId] || libs[shortName];
+      const libNode = libNodes[libId] || libNodes[shortName];
+      const libSym = libNode ? nodeSymbol(libNode, unit) : null;
       const name = (libSym && libSym.name) || shortName;
       // Power/net-identifier symbols live in project libraries too; the
       // (power) marker in the lib_symbols entry is authoritative, not the
@@ -307,14 +309,14 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         ...symRecs
       );
       sym = { symDocUuid, partId, name, isPower, netName, nameOff };
-      usedSymbols[libId] = sym;
+      usedSymbols[symKey] = sym;
     }
 
     // One DEVICE per (symbol, footprint): the same KiCad symbol can be placed
     // with different Footprint properties (R1/R2), and each component must bind
     // to a device whose FootprintName matches.
     const fp = footprintName || '';
-    const devKey = libId + '\u0000' + fp;
+    const devKey = symKey + '\u0000' + fp;
     let dev = usedDevices[devKey];
     if (!dev) {
       const devUuid = uuid(16);
@@ -422,6 +424,52 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   };
   let sheetNodeIdx = 0;
 
+  // KiCad hierarchical_label → EasyEDA net port (SYMBOL docType 19). Net ports
+  // are the child page side of the parent's block-symbol pins; without them the
+  // hierarchy is not electrically connected.
+  const NETPORT_TYPE = {
+    input: 'IN', output: 'OUT', bidirectional: 'BI', tri_state: 'Undefined',
+    passive: 'Undefined', unspecified: 'Undefined'
+  };
+  const netportDocs = new Map();
+  const emitNetport = node => {
+    const name = findValue(node);
+    if (!name) return;
+    const [x, y, rot] = findAtXY(node);
+    const shapeArr = findSub(node, 'shape');
+    const type = NETPORT_TYPE[shapeArr ? shapeArr[0] : 'input'] || 'Undefined';
+    let docs = netportDocs.get(name);
+    if (!docs) {
+      const symUuid = uuid(16);
+      const devUuid = uuid(16);
+      libDocs.push(
+        docHead('SYMBOL', symUuid),
+        metaRec(name, { docType: 19 }),
+        ...buildNetportSymbolRecords({ name, type }),
+        docHead('DEVICE', devUuid),
+        metaRec(name, {
+          images: [],
+          attributes: { Symbol: symUuid, Footprint: '', Description: '', Name: name, 'Add into BOM': 'no' }
+        })
+      );
+      docs = { symUuid, devUuid, type };
+      netportDocs.set(name, docs);
+    }
+    const compId = randId();
+    const cx = toSch(x), cy = pageY(y);
+    const rotation = ((((rot || 0) % 360) + 360) % 360);
+    ticket++;
+    pageRecords.push({
+      head: { type: 'COMPONENT', ticket, id: compId },
+      body: { partId: '1', x: cx, y: cy, rotation, isMirror: false, attrs: {}, zIndex: ++componentZ }
+    });
+    const ax = cx - 7.5;
+    pageRecords.push(pageAttr(compId, ++ticket, 'Device', docs.devUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
+    pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', docs.symUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
+    pageRecords.push(pageAttr(compId, ++ticket, 'Name', name, ax, cy, 'RIGHT_MIDDLE'));
+  };
+
+
   for (const node of root.slice(1)) {
     if (!Array.isArray(node)) continue;
     const head = node[0].v;
@@ -477,7 +525,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
           startX: cx - dx, startY: cy - dy, endX: cx + dx, endY: cy + dy, lineGroup: ncGroup
         });
       }
-    } else if (head === 'label' || head === 'global_label' || head === 'hierarchical_label') {
+    } else if (head === 'hierarchical_label') {
+      emitNetport(node);
+    } else if (head === 'label' || head === 'global_label') {
       const [x, y] = findAtXY(node);
       const val = findValue(node);
       ticket++;
@@ -582,7 +632,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const libId = findChildValue(node, 'lib_id');
       if (!libId) continue;
       const props = collectProperties(node);
-      const lib = ensureSymbolDoc(libId, props.Footprint || '');
+      const unitArr = findSub(node, 'unit');
+      const unit = unitArr ? parseInt(unitArr[0], 10) || 1 : 1;
+      const lib = ensureSymbolDoc(libId, props.Footprint || '', unit);
       const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');
       // KiCad (mirror y) = left-right flip = eprj3 isMirror; (mirror x) = top-bottom
