@@ -697,6 +697,36 @@ function main() {
     assert(!powerEsch.some(r => r.type === 'ATTR' && r.body && r.body.value === 'PWR_FLAG'),
       'no PWR_FLAG net identifier is emitted (would short every flagged net)');
 
+    // Old project libraries often lost the (power) marker; a '#' reference
+    // still marks a power symbol (hidden power pin = global net).
+    const hashPowerSch = `(kicad_sch (version 20230121) (generator eeschema)
+  (lib_symbols
+    (symbol "oldlib:VPP"
+      (property "Reference" "#PWR")
+      (property "Value" "VPP")
+      (property "Footprint" "")
+      (symbol "VPP_1_1"
+        (pin power_in line (at 0 0 90) (length 0) (name "VPP") (number "1"))))
+  )
+  (symbol (lib_id "oldlib:VPP") (at 30 30 0) (unit 1)
+    (property "Reference" "#PWR05")
+    (property "Value" "VPP")
+    (property "Footprint" ""))
+)`;
+    const hashDir = path.join(tmp, 'hash-power');
+    fs.mkdirSync(hashDir, { recursive: true });
+    fs.writeFileSync(path.join(hashDir, 'hashpower.kicad_sch'), hashPowerSch);
+    const hashOut = path.join(tmp, 'hash-power-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', hashDir, hashOut, '--project-name', 'hashpower']);
+    const hashDocs = docSegments(readRecords(path.join(hashOut, 'sch', 'hashpower', 'hashpower.esch2')));
+    const hashPage = hashDocs[hashDocs.length - 1];
+    const hashPowerComp = hashPage.records.find(r => r.type === 'COMPONENT'
+      && r.body.partId === 'pid8a0e77bacb214e' && r.body.zIndex !== null);
+    const hashAttrs = hashPowerComp
+      ? hashPage.records.filter(r => r.type === 'ATTR' && r.body.parentId === hashPowerComp.head.id) : [];
+    assert(!!hashPowerComp && hashAttrs.some(a => a.body.key === 'Global Net Name' && a.body.value === 'VPP'),
+      'a # reference without (power) still converts to a power flag (VPP)');
+
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');
     run([SCRIPTS + '/convert-kicad.js', 'convert', tmp, fineDst, '--project-name', 'conv', '--pour-fineness', '1']);

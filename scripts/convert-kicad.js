@@ -288,7 +288,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   const libDocs = [];
   const symbolDocs = new Map(); // libId -> one SYMBOL doc holding every used PART/unit
   const usedDevices = {};
-  function ensureSymbolDoc(libId, footprintName, unit = 1) {
+  function ensureSymbolDoc(libId, footprintName, unit = 1, forcedPower = false) {
     const shortName = libId.split(':').pop();
     const libNode = libNodes[libId] || libNodes[shortName];
     const libSym = libNode ? nodeSymbol(libNode, unit) : null;
@@ -296,13 +296,14 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     // Power/net-identifier symbols live in project libraries too; the
     // (power) marker in the lib_symbols entry is authoritative, not the
     // "power:" lib_id prefix.
-    const isPower = /^power:/i.test(libId) || !!(libSym && libSym.isPower);
+    const isPower = forcedPower || /^power:/i.test(libId) || !!(libSym && libSym.isPower);
     const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
 
     // Multi-unit symbols must live in ONE SYMBOL document with one PART per
     // unit (EDA multi-part). Separate docs with the same partId made the
     // netlist drop the device entirely.
-    let doc = symbolDocs.get(libId);
+    const docKey = libId + (forcedPower ? ' P' : '');
+    let doc = symbolDocs.get(docKey);
     if (!doc) {
       doc = {
         uuid: uuid(16),
@@ -317,7 +318,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       };
       // keep DOCHEAD uuid in sync with the doc uuid
       doc.records[0].body.uuid = doc.uuid;
-      symbolDocs.set(libId, doc);
+      symbolDocs.set(docKey, doc);
       libDocs.push({ __symbolDoc: doc });
     }
     let partId = doc.parts.get(unit);
@@ -765,7 +766,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         warn(`schematic: ERC flag ${props.Reference || flagName} skipped (not a net identifier)`);
         continue;
       }
-      const lib = ensureSymbolDoc(libId, props.Footprint || '', unit);
+      // A '#' reference marks a KiCad power/net symbol even when its library
+      // entry lost the (power) marker: hidden power pins define a global net.
+      const forcedPower = /^#/.test(props.Reference || '') && !!props.Value;
+      const lib = ensureSymbolDoc(libId, props.Footprint || '', unit, forcedPower);
       const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');
       // KiCad (mirror y) = left-right flip = eprj3 isMirror; (mirror x) = top-bottom
