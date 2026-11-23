@@ -554,6 +554,29 @@ function main() {
     const nattr = k => (netportAttrs.find(a => a.body.key === k) || {}).body?.value;
     assert(!!netportComp && nattr('Symbol') === netportDoc.head.body.uuid && nattr('Name') === 'A',
       'net port component links Symbol/Name to the child net');
+    // Wires that share an endpoint (or meet at a KiCad junction) form ONE
+    // EasyEDA WIRE group: separate groups would read as isolated nets.
+    const wireSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (wire (pts (xy 10 10) (xy 20 10)))
+  (wire (pts (xy 20 10) (xy 20 20)))
+  (wire (pts (xy 15 10) (xy 15 20)))
+  (junction (at 15 10))
+)`;
+    const wireDir = path.join(tmp, 'wires');
+    fs.mkdirSync(wireDir, { recursive: true });
+    fs.writeFileSync(path.join(wireDir, 'wires.kicad_sch'), wireSch);
+    const wireOut = path.join(tmp, 'wires-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', wireDir, wireOut, '--project-name', 'wires']);
+    const wirePage = docSegments(readRecords(path.join(wireOut, 'sch', 'wires', 'wires.esch2'))).pop();
+    const wireGroups = wirePage.records.filter(r => r.type === 'WIRE');
+    const wireLines = wirePage.records.filter(r => r.type === 'LINE' && r.body.lineGroup);
+    assert(wireGroups.length === 1,
+      'connected wires are emitted as one WIRE group (shared endpoints + junction)',
+      `groups=${wireGroups.length}`);
+    assert(wireLines.length === 4 && wireLines.every(l => l.body.lineGroup === wireGroups[0].head.id),
+      'junction splits the through wire and all segments share the WIRE group id',
+      `lines=${wireLines.length}`);
+
     // Embedded docs must not collide across pages (CLI refuses to open then).
     const frameUuids = [rootEsch, childEsch].map(rs => {
       const ds = docSegments(rs);

@@ -422,6 +422,101 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     if (info.sheetName) pos('Sheetname', info.sheetName, leftX, topY - 2.8, 'LEFT_BOTTOM', true);
     if (info.sheetFile) pos('Sheetfile', info.sheetFile, leftX, bottomY + 2.3, 'LEFT_TOP', true);
   };
+  // EasyEDA does not join two pins that merely sit on the same point (KiCad
+  // does); a wire touching that point connects them. KiCad power symbols are
+  // placed directly on pins, so give every power flag / net port a 1-unit stub.
+  const emitPinStub = (cx, cy) => {
+    const groupId = randId();
+    ticket++;
+    pageRecords.push({ head: { type: 'WIRE', ticket, id: groupId }, body: { zIndex: ticket } });
+    ticket++;
+    pageRecords.push({
+      head: { type: 'LINE', ticket, id: randId() },
+      body: {
+        fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
+        startX: cx, startY: cy, endX: cx, endY: cy + 1, lineGroup: groupId
+      }
+    });
+  };
+
+  // Wires: KiCad connectivity is geometric across *all* wire segments, while
+  // EasyEDA only joins LINEs that belong to the same WIRE group. Emit one
+  // WIRE/BUS group per connected wire network (splitting segments at KiCad
+  // junctions), otherwise every KiCad wire becomes an isolated net.
+  const emitAllWires = () => {    const raw = [];
+    for (const node of root.slice(1)) {
+      if (!Array.isArray(node) || (node[0].v !== 'wire' && node[0].v !== 'bus')) continue;
+      const kind = node[0].v;
+      const pts = extractWirePoints(node);
+      for (let i = 0; i + 1 < pts.length; i++) raw.push({ kind, a: pts[i], b: pts[i + 1] });
+    }
+    if (!raw.length) return;
+    const junctions = [];
+    for (const node of root.slice(1)) {
+      if (Array.isArray(node) && node[0].v === 'junction') {
+        const at = findSub(node, 'at');
+        if (at) junctions.push([parseFloat(at[0]), parseFloat(at[1])]);
+      }
+    }
+    const segs = [];
+    for (const s of raw) {
+      const [ax, ay] = s.a, [bx, by] = s.b;
+      const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+      if (!len2) continue;
+      const ts = [];
+      for (const [jx, jy] of junctions) {
+        const t = ((jx - ax) * (bx - ax) + (jy - ay) * (by - ay)) / len2;
+        if (t <= 1e-9 || t >= 1 - 1e-9) continue;
+        if (Math.hypot(ax + (bx - ax) * t - jx, ay + (by - ay) * t - jy) > 1e-6) continue;
+        ts.push(t);
+      }
+      ts.sort((p, q) => p - q);
+      let prev = s.a;
+      for (const t of ts) {
+        const p = [ax + (bx - ax) * t, ay + (by - ay) * t];
+        segs.push({ kind: s.kind, a: prev, b: p });
+        prev = p;
+      }
+      segs.push({ kind: s.kind, a: prev, b: s.b });
+    }
+    const pkey = (kind, p) => kind + ':' + p[0].toFixed(6) + ',' + p[1].toFixed(6);
+    const parent = new Map();
+    const find = k => {
+      if (!parent.has(k)) parent.set(k, k);
+      let r = k;
+      while (parent.get(r) !== r) r = parent.get(r);
+      while (parent.get(k) !== r) { const n = parent.get(k); parent.set(k, r); k = n; }
+      return r;
+    };
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+    for (const s of segs) union(pkey(s.kind, s.a), pkey(s.kind, s.b));
+    const groups = new Map();
+    for (const s of segs) {
+      const r = find(pkey(s.kind, s.a));
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(s);
+    }
+    for (const list of groups.values()) {
+      const kind = list[0].kind;
+      const groupId = randId();
+      ticket++;
+      pageRecords.push({ head: { type: kind === 'wire' ? 'WIRE' : 'BUS', ticket, id: groupId }, body: { zIndex: ticket } });
+      for (const s of list) {
+        ticket++;
+        pageRecords.push({
+          head: { type: 'LINE', ticket, id: randId() },
+          body: {
+            fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
+            startX: toSch(s.a[0]), startY: pageY(s.a[1]),
+            endX: toSch(s.b[0]), endY: pageY(s.b[1]),
+            lineGroup: groupId
+          }
+        });
+      }
+    }
+  };
+  emitAllWires();
+
   let sheetNodeIdx = 0;
 
   // KiCad hierarchical_label → EasyEDA net port (SYMBOL docType 19). Net ports
@@ -467,6 +562,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     pageRecords.push(pageAttr(compId, ++ticket, 'Device', docs.devUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
     pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', docs.symUuid, ax, cy, 'RIGHT_MIDDLE', { valueVisible: false }));
     pageRecords.push(pageAttr(compId, ++ticket, 'Name', name, ax, cy, 'RIGHT_MIDDLE'));
+    // A hier label may attach directly to a pin in KiCad; EasyEDA needs a wire.
+    emitPinStub(cx, cy);
   };
 
 
@@ -475,24 +572,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     const head = node[0].v;
 
     if (head === 'wire' || head === 'bus') {
-      // Official structure: the WIRE/BUS head id IS the shared lineGroup id of
-      // its LINE children; the WIRE body carries only the zIndex.
-      const groupId = randId();
-      ticket++;
-      pageRecords.push({ head: { type: head === 'wire' ? 'WIRE' : 'BUS', ticket, id: groupId }, body: { zIndex: ticket } });
-      const pts = extractWirePoints(node);
-      for (let i = 0; i < pts.length - 1; i++) {
-        ticket++;
-        pageRecords.push({
-          head: { type: 'LINE', ticket, id: randId() },
-          body: {
-            fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
-            startX: toSch(pts[i][0]), startY: pageY(pts[i][1]),
-            endX: toSch(pts[i + 1][0]), endY: pageY(pts[i + 1][1]),
-            lineGroup: groupId
-          }
-        });
-      }
+      // Emitted up-front as one group per connected wire network (emitAllWires).
+      continue;
     } else if (head === 'bus_entry') {
       const at = findSub(node, 'at');
       const size = findSub(node, 'size');
@@ -691,6 +772,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
         pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
         pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        // Connect the power pin to whatever it sits on (KiCad pin-on-pin).
+        emitPinStub(compX, compY);
       } else {
         // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
         // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
