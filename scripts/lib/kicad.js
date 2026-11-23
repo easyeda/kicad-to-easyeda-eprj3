@@ -130,6 +130,10 @@ function nodeSymbol(node, unit = 1) {
       for (let j = 1; j < it.length; j++) {
         const sub = it[j];
         if (!Array.isArray(sub) && sub && sub.v === 'hide') { pin.hide = true; continue; }
+        if (Array.isArray(sub) && sub[0]?.v === 'hide' && (sub[1] == null || sub[1].v === 'yes')) {
+          pin.hide = true;
+          continue;
+        }
         if (!Array.isArray(sub) || !sub.length) continue;
         if (sub[0].v === 'name') {
           pin.name = sub[1]?.v;

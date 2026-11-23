@@ -783,6 +783,14 @@ function main() {
     const hidNames = hidPage.records.filter(r => r.type === 'ATTR' && r.body.key === 'Global Net Name').map(r => r.body.value);
     assert(hidNames.includes('VCC') && hidNames.includes('GND'),
       'hidden power_in pins get VCC/GND net flags', hidNames.join(','));
+    // KiCad 10 writes pins hidden as "(hide yes)" instead of a bare "hide".
+    const k10Sym = parseSex(`(symbol "H10" (symbol "H10_1_1"
+      (pin passive line (at 0 0 0) (length 1) (name "A") (number "1"))
+      (pin power_in line (at 0 0 0) (length 0) (hide yes) (name "GND") (number "2"))
+      (pin output line (at 0 0 0) (length 1) (hide no) (name "Y") (number "3"))))`);
+    const k10 = nodeSymbol(k10Sym, 1);
+    assert(k10.pins.filter(p => p.hide).map(p => p.number).join(',') === '2',
+      'KiCad 10 "(hide yes)" marks a pin hidden and "(hide no)" does not');
 
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');
