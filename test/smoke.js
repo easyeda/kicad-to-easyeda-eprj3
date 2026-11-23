@@ -169,14 +169,14 @@ function main() {
     assert(index.owner_uuid.length === 32, 'owner uuid is 32 hex (official length)');
 
     // ---- schematic side ----
-    assert(fs.existsSync(path.join(dst, 'sch', 'Schematic1', 'Schematic1.ecfg')), 'convert-kicad writes the schematic .ecfg');
-    assert(fs.existsSync(path.join(dst, 'sch', 'Schematic1', 'Schematic1.evar')), 'convert-kicad writes the schematic .evar');
-    const ecfg = readRecords(path.join(dst, 'sch', 'Schematic1', 'Schematic1.ecfg'));
+    assert(fs.existsSync(path.join(dst, 'sch', 'sample', 'sample.ecfg')), 'convert-kicad writes the schematic .ecfg');
+    assert(fs.existsSync(path.join(dst, 'sch', 'sample', 'sample.evar')), 'convert-kicad writes the schematic .evar');
+    const ecfg = readRecords(path.join(dst, 'sch', 'sample', 'sample.ecfg'));
     const ecfgHead = ecfg.find(r => r.type === 'DOCHEAD');
     assert(ecfgHead && ecfgHead.body.docType === 'SCH' && ecfgHead.body.uuid === schEntry.uuid,
       '.ecfg is a SCH doc whose uuid equals the index schematic uuid');
 
-    const convSch = readRecords(path.join(dst, 'sch', 'Schematic1', 'P1.esch2'));
+    const convSch = readRecords(path.join(dst, 'sch', 'sample', 'sample.esch2'));
     const schDocs = docSegments(convSch);
     const pageDoc = schDocs[schDocs.length - 1];
     const symDocs = schDocs.filter(d => d.head.body.docType === 'SYMBOL');
@@ -184,7 +184,7 @@ function main() {
     assert(pageDoc && pageDoc.head.body.docType === 'SCH_PAGE', 'last .esch2 segment is a SCH_PAGE doc');
     assert(pageDoc.head.body.uuid === sheetEntry.uuid, 'page DOCHEAD uuid equals the index sheet uuid');
     const pageMeta = pageDoc.records.find(r => r.type === 'META');
-    assert(pageMeta && pageMeta.body.title === 'P1' && pageMeta.body.schematic === schEntry.uuid && pageMeta.body.zIndex === 1,
+    assert(pageMeta && pageMeta.body.title === 'sample' && pageMeta.body.schematic === schEntry.uuid && pageMeta.body.zIndex === 1,
       'page META links title/schematic/zIndex per the official format');
     // frame docs (docType 20) + one SYMBOL/DEVICE pair per used lib_id
     const symMeta = d => { const m = d.records.find(r => r.type === 'META'); return m ? m.body.docType : null; };
@@ -488,7 +488,71 @@ function main() {
       }
     }
 
-    // ---- power/net-identifier symbols from project libraries ----
+    // ---- hierarchical sheets → block symbols (EDA links by schematic name) ----
+    const rootSch = `(kicad_sch (version 20230121) (generator eeschema)
+  (paper "A4")
+  (sheet (at 50 50) (size 30 20)
+    (stroke (width 0) (type solid)) (fill (color 0 0 0 0))
+    (property "Sheetname" "childSheet" (at 50 49 0))
+    (property "Sheetfile" "child.kicad_sch" (at 50 71 0))
+    (pin "A" input (at 50 55 180))
+    (pin "B" output (at 50 60 180))
+  )
+)`;
+    const childSch = `(kicad_sch (version 20230121) (generator eeschema)
+  (paper "A4")
+  (hierarchical_label "A" (shape input) (at 30 30 180) (effects (font (size 1.27 1.27))))
+)`;
+    const hierDir = path.join(tmp, 'hier');
+    fs.mkdirSync(hierDir, { recursive: true });
+    fs.writeFileSync(path.join(hierDir, 'rootCase.kicad_sch'), rootSch);
+    fs.writeFileSync(path.join(hierDir, 'child.kicad_sch'), childSch);
+    const hierOut = path.join(tmp, 'hier-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', hierDir, hierOut, '--project-name', 'rootCase']);
+    const hierIndex = JSON.parse(fs.readFileSync(path.join(hierOut, 'rootCase.eprj3'), 'utf8'));
+    const hierSchs = Object.values(hierIndex.profile.schematics);
+    const rootEntry = hierSchs.find(s => s.name === 'rootCase');
+    const childEntry = hierSchs.find(s => s.name === 'child');
+    assert(rootEntry && childEntry, 'KiCad root + child sheets become separate EasyEDA schematics');
+    assert(rootEntry && childEntry && rootEntry.board && rootEntry.board === childEntry.board,
+      'both schematics hang under the same board');
+    const blockEntries = Object.values(hierIndex.profile.blockSymbols || {});
+    assert(blockEntries.length === 1 && blockEntries[0].title === 'child' && blockEntries[0].docType === 17,
+      'the hierarchical rectangle registers a docType-17 block symbol named after the child schematic',
+      JSON.stringify(blockEntries));
+    const rootEsch = readRecords(path.join(hierOut, 'sch', 'rootCase', 'rootCase.esch2'));
+    const rootDocs = docSegments(rootEsch);
+    const rootPage = rootDocs[rootDocs.length - 1];
+    const blockDoc = rootDocs.find(d => d.head.body.docType === 'SYMBOL'
+      && (d.records.find(r => r.type === 'META') || {}).body?.docType === 17);
+    assert(!!blockDoc && blockDoc.head.body.uuid === blockEntries[0].uuid,
+      'the root page embeds the block symbol document');
+    const blockPins = blockDoc ? blockDoc.records.filter(r => r.type === 'PIN') : [];
+    assert(blockPins.length === 2, 'block symbol carries one pin per KiCad sheet pin', `pins=${blockPins.length}`);
+    const pinNames = blockDoc ? blockDoc.records.filter(r => r.type === 'ATTR' && r.body.key === 'Pin Name').map(r => r.body.value) : [];
+    assert(pinNames.includes('A') && pinNames.includes('B'), 'block symbol pins keep the sheet pin names', pinNames.join(','));
+    const blockRect = blockDoc && blockDoc.records.find(r => r.type === 'RECT');
+    assert(!!blockRect && Math.abs(Math.abs(blockRect.body.dotX2 - blockRect.body.dotX1) - kicadToSchUnit(30)) < 0.01,
+      'block symbol rectangle matches the KiCad sheet size');
+    const blockComp = rootPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === '1');
+    assert(!!blockComp, 'the block symbol is placed as a COMPONENT on the parent page');
+    const blockAttrs = rootPage.records.filter(r => r.type === 'ATTR' && blockComp && r.body.parentId === blockComp.head.id);
+    const attrVal = k => (blockAttrs.find(a => a.body.key === k) || {}).body?.value;
+    assert(attrVal('Symbol') === blockEntries[0].uuid && attrVal('Name') === 'child',
+      'block symbol COMPONENT links Symbol/Name to the block document');
+    assert(attrVal('Sheetname') === 'childSheet' && attrVal('Sheetfile') === 'child.kicad_sch',
+      'block symbol keeps the KiCad Sheetname/Sheetfile metadata');
+    // Embedded docs must not collide across pages (CLI refuses to open then).
+    const frameUuids = [rootEsch, readRecords(path.join(hierOut, 'sch', 'child', 'child.esch2'))].map(rs => {
+      const ds = docSegments(rs);
+      const f = ds.find(d => d.head.body.docType === 'SYMBOL'
+        && (d.records.find(r => r.type === 'META') || {}).body?.docType === 20);
+      return f && f.head.body.uuid;
+    });
+    assert(frameUuids[0] && frameUuids[1] && frameUuids[0] !== frameUuids[1],
+      'each page embeds its own frame document uuid (no duplicate documents across pages)');
+
+
     // KiCad marks power symbols with a bare (power) node; the lib_id does NOT
     // have to start with "power:" (project-local symbols such as
     // custom_pads_schlib:GND). They must become EasyEDA power flags
@@ -523,7 +587,7 @@ function main() {
     const gndSymNode = powerLib.slice(1).find(n => Array.isArray(n) && n[0].v === 'symbol');
     assert(nodeSymbol(gndSymNode).isPower === true,
       'KiCad parser flags (power) symbols even without the power: lib_id prefix');
-    const powerEsch = readRecords(path.join(powerOut, 'sch', 'Schematic1', 'P1.esch2'));
+    const powerEsch = readRecords(path.join(powerOut, 'sch', 'power', 'power.esch2'));
     const powerDocs = docSegments(powerEsch);
     const powerPage = powerDocs[powerDocs.length - 1];
     const powerSymDoc = powerDocs.find(d => d.head.body.docType === 'SYMBOL'

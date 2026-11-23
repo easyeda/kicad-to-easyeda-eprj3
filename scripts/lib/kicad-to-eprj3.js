@@ -675,8 +675,83 @@ function buildFootprintRecords(kicadFp, opts = {}) {
   return { records, partId, pads: padIds };
 }
 
+// ---- hierarchical block symbol (SYMBOL docType 17) ----
+// A KiCad hierarchical sheet rectangle becomes an EasyEDA block symbol whose
+// title is the child schematic name (the client links block symbols to
+// schematics by title). Geometry follows real app exports: PART id "1",
+// one PIN per hierarchical sheet pin, a RECT for the sheet border, and
+// Name / Designator attributes on the part.
+const SHEET_PIN_TYPE = {
+  input: 'IN', output: 'OUT', bidirectional: 'BI', tri_state: 'Undefined',
+  passive: 'Passive', free: 'Undefined', unspecified: 'Undefined',
+  power_in: 'Power', power_out: 'Power', open_collector: 'Undefined',
+  open_emitter: 'Undefined', no_connect: 'Undefined'
+};
+function buildBlockSymbolRecords(block) {
+  const partId = '1';
+  const records = [];
+  let ticket = 1;
+  const r2 = v => Math.round(v * 100) / 100;
+  records.push({ head: { type: 'CANVAS', ticket: ++ticket, id: 'CANVAS' },
+    body: { originX: 0, originY: 0, yAxisDirection: 'up' } });
+  records.push({ head: { type: 'PART', ticket: ++ticket, id: partId }, body: { title: '1' } });
+  for (const pin of block.pins || []) {
+    const pinId = 'e' + randId();
+    const rot = pin.rotation || 0;
+    ticket++;
+    records.push({ head: { type: 'PIN', ticket, id: pinId }, body: {
+      partId, groupId: '', locked: false, zIndex: ticket, display: true,
+      x: r2(pin.x), y: r2(pin.y), length: pin.length || 10, rotation: rot,
+      color: null, pinShape: 'NONE', yAxisDirection: 'up'
+    } });
+    const vertical = rot === 90 || rot === 270;
+    // Text sits just inside the rectangle, like the app's own block exports.
+    let nameX = pin.x + 12, nameY = pin.y;
+    let numX = pin.x + 5, numY = pin.y;
+    if (rot === 180) { nameX = pin.x - 12; numX = pin.x - 5; }
+    else if (rot === 90) { nameX = pin.x; nameY = pin.y + 12; numX = pin.x; numY = pin.y + 5; }
+    else if (rot === 270) { nameX = pin.x; nameY = pin.y - 12; numX = pin.x; numY = pin.y - 5; }
+    const attr = (key, value, x, y, visible, fontSize) => {
+      ticket++;
+      records.push({ head: { type: 'ATTR', ticket, id: 'e' + randId() }, body: {
+        partId, groupId: '', locked: false, zIndex: ticket, parentId: pinId,
+        key, value, keyVisible: false, valueVisible: visible,
+        x: x == null ? null : r2(x), y: y == null ? null : r2(y),
+        rotation: vertical ? 90 : 0,
+        color: null, fillColor: null, fontFamily: null, fontSize,
+        strikeout: false, underline: false, italic: false, fontWeight: false,
+        align: vertical ? 'CENTER_MIDDLE' : 'LEFT_BOTTOM', yAxisDirection: 'up'
+      } });
+    };
+    attr('Pin Name', pin.name || '', nameX, nameY, true, 9);
+    attr('Pin Number', String(pin.number == null ? '' : pin.number), numX, numY, true, 9);
+    attr('Pin Type', SHEET_PIN_TYPE[pin.type] || 'Undefined', null, null, false, 6.75);
+  }
+  const W = block.width || 0, H = block.height || 0;
+  ticket++;
+  records.push({ head: { type: 'RECT', ticket, id: 'e' + randId() }, body: {
+    partId, groupId: '', locked: false, zIndex: ticket,
+    dotX1: r2(-W / 2), dotY1: r2(H / 2), dotX2: r2(W / 2), dotY2: r2(-H / 2),
+    radiusX: 0, radiusY: 0, rotation: 0,
+    strokeColor: null, strokeWidth: 1, strokeStyle: 'SOLID',
+    fillColor: null, fillStyle: 'NONE', yAxisDirection: 'up'
+  } });
+  for (const [key, value] of [['Name', block.title || ''], ['Designator', '?']]) {
+    ticket++;
+    records.push({ head: { type: 'ATTR', ticket, id: 'e' + randId() }, body: {
+      partId, groupId: '', locked: false, zIndex: ticket, parentId: partId,
+      key, value, keyVisible: false, valueVisible: false,
+      x: null, y: null, rotation: 0,
+      color: null, fillColor: null, fontFamily: null, fontSize: 5,
+      strikeout: false, underline: false, italic: false, fontWeight: false,
+      align: 'LEFT_BOTTOM', yAxisDirection: 'up'
+    } });
+  }
+  return records;
+}
+
 module.exports = {
-  buildSymbolRecords, buildFootprintRecords, footprintPadRecord,
+  buildSymbolRecords, buildFootprintRecords, footprintPadRecord, buildBlockSymbolRecords,
   kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

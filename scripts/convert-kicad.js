@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts, extractPads } = require('./lib/kicad');
 const {
-  buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY,
+  buildSymbolRecords, buildFootprintRecords, buildBlockSymbolRecords, kicadToEprj3, flipY,
   kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
@@ -72,6 +72,25 @@ function docHead(docType, docUuid) {
 
 function metaRec(title, extra = {}) {
   return { head: { type: 'META', ticket: 1, id: 'META' }, body: { title, description: '', tags: [], source: '', ...extra } };
+}
+
+// The A4 frame template carries fixed document uuids. Each page must embed its
+// own copy: the project scanner indexes documents by uuid across all .esch2
+// files and rejects duplicates when opening. References to the old uuids
+// (frame Symbol/Device ATTRs) are remapped along with the DOCHEADs.
+function instantiateFrameTemplate() {
+  const oldSymbol = FRAME_TEMPLATE.symbol.find(r => r.type === 'DOCHEAD').body.uuid;
+  const oldDevice = FRAME_TEMPLATE.device.find(r => r.type === 'DOCHEAD').body.uuid;
+  const symbolUuid = uuid(16);
+  const deviceUuid = uuid(16);
+  const remap = r => JSON.parse(JSON.stringify(r)
+    .split(oldSymbol).join(symbolUuid).split(oldDevice).join(deviceUuid));
+  return {
+    symbol: FRAME_TEMPLATE.symbol.map(remap),
+    device: FRAME_TEMPLATE.device.map(remap),
+    pageAttrs: FRAME_TEMPLATE.pageAttrs.map(remap),
+    symbolUuid, deviceUuid
+  };
 }
 
 function findSub(node, key) {
@@ -115,16 +134,64 @@ async function main() {
   const project = await Project.create(dst, projectName);
   console.log(`Created eprj3 project at ${dst}`);
 
-  // Walk schematics
-  const schs = fs.readdirSync(src).filter(f => f.endsWith('.kicad_sch'));
-  let schIdx = 1;
-  for (const schFile of schs) {
-    const sch = project.ensureSchematic(`Schematic${schIdx++}`);
-    const sheet = project.ensureSheet(sch, 'P1');
+  // ---- schematics: KiCad hierarchy → EasyEDA hierarchy ----
+  // KiCad: one root .kicad_sch; (sheet ...) nodes reference child files.
+  // EasyEDA: no root page concept. Hierarchy is a block symbol (SYMBOL
+  // docType 17) placed on the parent page, linked by *name* to a child
+  // schematic. So each KiCad sheet file becomes its own schematic under the
+  // same board, and every sheet rectangle becomes a block symbol.
+  const schFiles = fs.readdirSync(src).filter(f => f.endsWith('.kicad_sch'));
+  const schAbs = schFiles.map(f => path.resolve(src, f));
+  const present = new Set(schAbs);
+
+  // child references, resolved from each file's (sheet ...) nodes
+  const sheetNodesByFile = new Map();
+  const referenced = new Set();
+  for (const abs of schAbs) {
+    const nodes = readSheetNodes(abs, present);
+    sheetNodesByFile.set(abs, nodes);
+    for (const n of nodes) if (n.target) referenced.add(n.target);
+  }
+  // Roots: files no other sheet points at. Prefer the project-name file.
+  let roots = schAbs.filter(abs => !referenced.has(abs));
+  const preferred = schAbs.find(abs => path.basename(abs, '.kicad_sch') === projectName);
+  if (preferred && roots.includes(preferred)) roots = [preferred, ...roots.filter(r => r !== preferred)];
+  if (!roots.length) roots = schAbs.slice();
+
+  // Assign one EasyEDA schematic name per unique KiCad file, in tree order.
+  const nameByFile = new Map();
+  const usedNames = new Set();
+  const sanitize = s => (s || 'Sheet').replace(/[^\w.-]+/g, '_');
+  const uniqueName = base => {
+    let n = sanitize(base), i = 2;
+    while (usedNames.has(n)) n = sanitize(base) + '_' + i++;
+    usedNames.add(n);
+    return n;
+  };
+  const queue = roots.slice();
+  while (queue.length) {
+    const abs = queue.shift();
+    if (nameByFile.has(abs)) continue;
+    const base = path.basename(abs, '.kicad_sch');
+    nameByFile.set(abs, uniqueName(base));
+    for (const n of sheetNodesByFile.get(abs) || []) {
+      if (n.target && present.has(n.target) && !nameByFile.has(n.target)) queue.push(n.target);
+    }
+  }
+  // Files not reachable from any root still get converted (standalone sheets).
+  for (const abs of schAbs) if (!nameByFile.has(abs)) nameByFile.set(abs, uniqueName(path.basename(abs, '.kicad_sch')));
+
+  const pageCount = nameByFile.size;
+  for (const abs of nameByFile.keys()) {
+    const schName = nameByFile.get(abs);
+    const sch = project.ensureSchematic(schName);
+    const sheet = project.ensureSheet(sch, schName);
     const file = project.sheetFile(sheet);
-    convertSchematic(path.join(src, schFile), file, sch, sheet, { projectName, pageCount: schs.length });
+    convertSchematic(abs, file, sch, sheet, {
+      projectName, pageCount, project, nameByFile, sheetNodes: sheetNodesByFile.get(abs) || []
+    });
     project.save();
-    console.log(`  sch: ${schFile} -> ${file}`);
+    console.log(`  sch: ${path.basename(abs)} -> ${file}`);
   }
 
   // Walk PCBs
@@ -281,6 +348,80 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     pageRecords.push({ head: { type, ticket, id: id || randId() }, body: { ...body, zIndex: body.zIndex != null ? body.zIndex : ticket } });
   };
 
+  // KiCad sheet rectangle → EasyEDA block symbol (SYMBOL docType 17) linked by
+  // name to the child schematic. The block symbol is appended to the page's
+  // embedded docs; the rectangle is placed as a COMPONENT on this page.
+  const embeddedBlocks = new Map();
+  const emitSheetBlock = info => {
+    if (!info || !info.target) {
+      warn(`schematic: sheet "${info && info.sheetName || '?'}" target file not found, skipped`);
+      return;
+    }
+    const childName = opts.nameByFile && opts.nameByFile.get(info.target);
+    if (!childName) { warn(`schematic: no schematic for sheet file ${info.sheetFile}`); return; }
+    const W = toSch(info.w), H = toSch(info.h);
+    // One block symbol per child schematic per page (same schematic placed
+    // twice on one page shares it). Each page embeds its own copy with a fresh
+    // document uuid so the project scanner sees no duplicate documents.
+    const project = opts.project;
+    let blockUuid = embeddedBlocks.get(childName);
+    if (!blockUuid) {
+      blockUuid = uuid(16);
+      embeddedBlocks.set(childName, blockUuid);
+      project.profile.profile.blockSymbols = project.profile.profile.blockSymbols || {};
+      project.profile.profile.blockSymbols[blockUuid] = {
+        uuid: blockUuid, title: childName, docType: 17, source: '',
+        version: String(Date.now()), updateTime: Date.now()
+      };
+      const EPS = 0.01;
+      const pins = (info.pins || []).map((p, i) => {
+        let lx, ly, rot;
+        if (Math.abs(p.x - info.x) < EPS) { lx = -W / 2; ly = H / 2 - toSch(p.y - info.y); rot = 0; }
+        else if (Math.abs(p.x - (info.x + info.w)) < EPS) { lx = W / 2; ly = H / 2 - toSch(p.y - info.y); rot = 180; }
+        else if (Math.abs(p.y - info.y) < EPS) { lx = toSch(p.x - info.x) - W / 2; ly = H / 2; rot = 90; }
+        else if (Math.abs(p.y - (info.y + info.h)) < EPS) { lx = toSch(p.x - info.x) - W / 2; ly = -H / 2; rot = 270; }
+        else {
+          // Fall back to the pin angle (outward normal, KiCad Y-down).
+          const edge = ((p.angle % 360) + 360) % 360;
+          if (edge === 0) { lx = W / 2; ly = H / 2 - toSch(p.y - info.y); rot = 180; }
+          else if (edge === 90) { lx = toSch(p.x - info.x) - W / 2; ly = H / 2; rot = 90; }
+          else if (edge === 270) { lx = toSch(p.x - info.x) - W / 2; ly = -H / 2; rot = 270; }
+          else { lx = -W / 2; ly = H / 2 - toSch(p.y - info.y); rot = 0; }
+        }
+        return { name: p.name, number: i + 1, type: p.type, x: lx, y: ly, rotation: rot, length: 10 };
+      });
+      libDocs.push(
+        docHead('SYMBOL', blockUuid),
+        metaRec(childName, { docType: 17 }),
+        ...buildBlockSymbolRecords({ title: childName, width: W, height: H, pins })
+      );
+    }
+    const compId = randId();
+    const cx = toSch(info.x) + W / 2;
+    const cy = pageY(info.y) + H / 2;
+    opts.project.__cbbCounter = (opts.project.__cbbCounter || 0) + 1;
+    ticket++;
+    pageRecords.push({
+      head: { type: 'COMPONENT', ticket, id: compId },
+      body: {
+        partId: '1', x: cx, y: cy, rotation: 0, isMirror: false,
+        attrs: {}, zIndex: ++componentZ
+      }
+    });
+    const topY = pageY(info.y);
+    const bottomY = pageY(info.y + info.h);
+    const leftX = toSch(info.x);
+    const pos = (key, value, x, y, align, visible) => {
+      pageRecords.push(pageAttr(compId, ++ticket, key, value, x, y, align, { valueVisible: visible }));
+    };
+    pos('Symbol', blockUuid, cx, cy, 'LEFT_BOTTOM', false);
+    pos('Name', childName, cx, cy, 'LEFT_BOTTOM', false);
+    pos('Designator', 'CBB' + opts.project.__cbbCounter, cx, cy, 'LEFT_BOTTOM', false);
+    if (info.sheetName) pos('Sheetname', info.sheetName, leftX, topY - 2.8, 'LEFT_BOTTOM', true);
+    if (info.sheetFile) pos('Sheetfile', info.sheetFile, leftX, bottomY + 2.3, 'LEFT_TOP', true);
+  };
+  let sheetNodeIdx = 0;
+
   for (const node of root.slice(1)) {
     if (!Array.isArray(node)) continue;
     const head = node[0].v;
@@ -434,7 +575,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         }
       });
     } else if (head === 'sheet') {
-      convertHierSheet(node, rec, pageY);
+      // Hierarchical sheet rectangle: converted to a block symbol component
+      // whose title is the child schematic name (EDA links by title).
+      emitSheetBlock((opts.sheetNodes || [])[sheetNodeIdx++]);
     } else if (head === 'symbol') {
       const libId = findChildValue(node, 'lib_id');
       if (!libId) continue;
@@ -522,9 +665,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   // Sheet frame (docType 20 "Drawing-Symbol_A4"): the app renders the border
   // from this built-in template; we embed its SYMBOL + DEVICE docs verbatim and
   // place a frame COMPONENT at the page origin with the title-block ATTRs.
+  // Every page needs its own document uuid: project files are scanned by doc
+  // uuid across all .esch2 files, and reusing the template's uuid in several
+  // pages makes the CLI refuse to open the project (DUPLICATE_DOCUMENT_FILE).
+  const frame = instantiateFrameTemplate();
   const frameCompId = randId();
-  const frameDeviceUuid = (FRAME_TEMPLATE.device.find(r => r.type === 'DOCHEAD').body).uuid;
-  const frameSymbolUuid = (FRAME_TEMPLATE.symbol.find(r => r.type === 'DOCHEAD').body).uuid;
+  const frameDeviceUuid = frame.deviceUuid;
+  const frameSymbolUuid = frame.symbolUuid;
   const now = new Date();
   const pad2 = n => String(n).padStart(2, '0');
   const dateStr = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
@@ -553,7 +700,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       zIndex: null
     }
   });
-  for (const r of FRAME_TEMPLATE.pageAttrs) {
+  for (const r of frame.pageAttrs) {
     ticket++;
     pageRecords.push({
       head: { type: 'ATTR', ticket, id: randId() },
@@ -569,7 +716,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   });
 
   writeRecords(dst, [
-    ...FRAME_TEMPLATE.symbol, ...FRAME_TEMPLATE.device,
+    ...frame.symbol, ...frame.device,
     ...libDocs, ...pageRecords
   ]);
 }
@@ -665,41 +812,6 @@ function shapeCommon(node, extra) {
 }
 
 // Hierarchical sheet: box + name text + per-pin net labels
-function convertHierSheet(node, rec, pageY) {
-  const at = findSub(node, 'at');
-  const size = findSub(node, 'size');
-  const props = collectProperties(node);
-  if (!at || !size) { warn('sheet without at/size'); return; }
-  const x = toSch(at[0]), y = pageY(at[1]);
-  const x2 = toSch(parseFloat(at[0]) + parseFloat(size[0]));
-  const y2 = pageY(parseFloat(at[1]) + parseFloat(size[1]));
-  rec('RECT', {
-    partId: '', groupId: '', locked: false,
-    dotX1: x, dotY1: y, dotX2: x2, dotY2: y2,
-    radiusX: 0, radiusY: 0, rotation: 0,
-    strokeColor: null, strokeStyle: null, fillColor: '', strokeWidth: 2, fillStyle: 'NONE'
-  });
-  const name = props['Sheet name'] || props['SheetName'] || '';
-  if (name) {
-    rec('TEXT', {
-      groupId: '', x: (x + x2) / 2, y: Math.max(y, y2) + 5, rotation: 0, color: null, fontFamily: null,
-      fontSize: 5, fontWeight: null, italic: null, underline: null, strikeout: null, align: 'CENTER_BOTTOM',
-      value: name, fillColor: null, locked: false
-    });
-  }
-  for (const it of node.slice(1)) {
-    if (Array.isArray(it) && it[0].v === 'pin') {
-      const pinName = it[1]?.v || '';
-      const atSub = findSub(it, 'at');
-      if (!atSub) continue;
-      rec('NETLABEL', {
-        x: toSch(atSub[0]), y: pageY(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
-        fontSize: 5, align: 'CENTER_MIDDLE', value: pinName, locked: false
-      });
-    }
-  }
-}
-
 function textEffects(node) {
   const out = { size: null, bold: null, italic: null, align: null };
   const eff = findSubNode(node, 'effects');
@@ -799,6 +911,49 @@ function collectProperties(node) {
   const out = {};
   for (const it of node.slice(1)) {
     if (Array.isArray(it) && it[0].v === 'property') out[it[1]?.v] = it[2]?.v;
+  }
+  return out;
+}
+
+// ---- KiCad hierarchical sheets ----
+// Reads every (sheet ...) node of a .kicad_sch: rectangle, Sheetname/Sheetfile
+// and the sheet pins (the hierarchical interface to the child page).
+function readSheetNodes(absFile, present) {
+  const out = [];
+  let root;
+  try { root = parseSex(fs.readFileSync(absFile, 'utf8')); } catch (e) { return out; }
+  for (const node of root.slice(1)) {
+    if (!Array.isArray(node) || node[0].v !== 'sheet') continue;
+    const at = findSub(node, 'at');
+    let size = findSub(node, 'size');
+    let x = 0, y = 0, w = 0, h = 0;
+    if (at) {
+      x = parseFloat(at[0]) || 0; y = parseFloat(at[1]) || 0;
+      if (at.length >= 4 && !size) { w = parseFloat(at[2]) || 0; h = parseFloat(at[3]) || 0; }
+    }
+    if (size) { w = parseFloat(size[0]) || 0; h = parseFloat(size[1]) || 0; }
+    const props = collectProperties(node);
+    const sheetFile = props.Sheetfile || '';
+    const target = sheetFile ? path.resolve(path.dirname(absFile), sheetFile) : null;
+    const pins = [];
+    for (const it of node.slice(1)) {
+      if (!Array.isArray(it) || it[0].v !== 'pin') continue;
+      const pat = findSub(it, 'at');
+      pins.push({
+        name: it[1]?.v || '',
+        type: it[2]?.v || 'passive',
+        x: pat ? parseFloat(pat[0]) : x,
+        y: pat ? parseFloat(pat[1]) : y,
+        angle: pat && pat[2] != null ? parseFloat(pat[2]) || 0 : 0
+      });
+    }
+    out.push({
+      x, y, w, h,
+      sheetName: props.Sheetname || '',
+      sheetFile,
+      target: target && present.has(target) ? target : null,
+      pins
+    });
   }
   return out;
 }
