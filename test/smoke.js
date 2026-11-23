@@ -550,6 +550,47 @@ function main() {
       'block symbol COMPONENT links Symbol/Name to the block document');
     assert(attrVal('Sheetname') === 'childSheet' && attrVal('Sheetfile') === 'child.kicad_sch',
       'block symbol keeps the KiCad Sheetname/Sheetfile metadata');
+    // A sheet file placed twice must be instantiated twice: each instance has
+    // its own designators (instances/path) and its own block symbol.
+    const reuseRoot = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (uuid "root-uuid")
+  (sheet (at 50 50) (size 30 20)
+    (uuid "sheet-a")
+    (property "Sheetname" "A" (at 50 49 0))
+    (property "Sheetfile" "reused.kicad_sch" (at 50 71 0)))
+  (sheet (at 100 50) (size 30 20)
+    (uuid "sheet-b")
+    (property "Sheetname" "B" (at 100 49 0))
+    (property "Sheetfile" "reused.kicad_sch" (at 100 71 0)))
+)`;
+    const reuseChild = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (uuid "child-uuid")
+  (lib_symbols
+    (symbol "rlib:R" (property "Reference" "R")
+      (symbol "R_1_1"
+        (pin passive line (at -2 0 0) (length 1) (name "~") (number "1"))
+        (pin passive line (at 2 0 0) (length 1) (name "~") (number "2")))))
+  (symbol (lib_id "rlib:R") (at 20 20 0) (unit 1)
+    (property "Reference" "R?") (property "Value" "1k")
+    (instances (project "reuse"
+      (path "/root-uuid/sheet-a" (reference "R1") (unit 1))
+      (path "/root-uuid/sheet-b" (reference "R2") (unit 1)))))
+)`;
+    const reuseDir = path.join(tmp, 'reuse');
+    fs.mkdirSync(reuseDir, { recursive: true });
+    fs.writeFileSync(path.join(reuseDir, 'reuseRoot.kicad_sch'), reuseRoot);
+    fs.writeFileSync(path.join(reuseDir, 'reused.kicad_sch'), reuseChild);
+    const reuseOut = path.join(tmp, 'reuse-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', reuseDir, reuseOut, '--project-name', 'reuseRoot']);
+    const reuseNames = Object.values(JSON.parse(fs.readFileSync(path.join(reuseOut, 'reuseRoot.eprj3'), 'utf8'))
+      .profile.schematics).map(s => s.name);
+    assert(reuseNames.includes('reused') && reuseNames.includes('reused_2'),
+      'a sheet file placed twice becomes two schematic instances', reuseNames.join(','));
+    const desigOf = name => docSegments(readRecords(path.join(reuseOut, 'sch', name, name + '.esch2')))
+      .pop().records.filter(r => r.type === 'ATTR' && r.body.key === 'Designator').map(r => r.body.value);
+    assert(desigOf('reused').join(',') === 'R1' && desigOf('reused_2').join(',') === 'R2',
+      'each reused-sheet instance gets its own per-path designator',
+      desigOf('reused').join(',') + ' / ' + desigOf('reused_2').join(','));
     const childEsch = readRecords(path.join(hierOut, 'sch', 'child', 'child.esch2'));
     const childDocs = docSegments(childEsch);
     const childPage = childDocs[childDocs.length - 1];

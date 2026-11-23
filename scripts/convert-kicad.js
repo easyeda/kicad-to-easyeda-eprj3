@@ -158,8 +158,9 @@ async function main() {
   if (preferred && roots.includes(preferred)) roots = [preferred, ...roots.filter(r => r !== preferred)];
   if (!roots.length) roots = schAbs.slice();
 
-  // Assign one EasyEDA schematic name per unique KiCad file, in tree order.
-  const nameByFile = new Map();
+  // One EasyEDA schematic per used KiCad sheet *instance*. A sheet file placed
+  // twice (reused hierarchy) is instantiated twice, so each instance keeps its
+  // own designators and connectivity instead of sharing one page.
   const usedNames = new Set();
   const sanitize = s => (s || 'Sheet').replace(/[^\w.-]+/g, '_');
   const uniqueName = base => {
@@ -168,27 +169,49 @@ async function main() {
     usedNames.add(n);
     return n;
   };
-  const queue = roots.slice();
-  while (queue.length) {
-    const abs = queue.shift();
-    if (nameByFile.has(abs)) continue;
-    const base = path.basename(abs, '.kicad_sch');
-    nameByFile.set(abs, uniqueName(base));
-    for (const n of sheetNodesByFile.get(abs) || []) {
-      if (n.target && present.has(n.target) && !nameByFile.has(n.target)) queue.push(n.target);
+  const rootUuidOf = abs => {
+    try { return findChildValue(parseSex(fs.readFileSync(abs, 'utf8')), 'uuid') || ''; } catch (e) { return ''; }
+  };
+  const pages = [];
+  const seenPaths = new Set();
+  const walk = (abs, instancePath, schName) => {
+    const nodes = sheetNodesByFile.get(abs) || [];
+    const children = nodes.map(node => ({ node, schName: null }));
+    pages.push({ abs, schName, instancePath, children });
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (!n.target) continue;
+      const childPath = instancePath + '/' + (n.uuid || uuid(8));
+      if (seenPaths.has(childPath)) continue;
+      seenPaths.add(childPath);
+      // Name pages after the sheet file (matching KiCad's file-based page
+      // identity); reused files get a _2/_3 suffix per instance.
+      const childName = uniqueName(path.basename(n.target, '.kicad_sch'));
+      children[i].schName = childName;
+      walk(n.target, childPath, childName);
     }
+  };
+  for (const abs of roots) {
+    const path0 = '/' + (rootUuidOf(abs) || uuid(8));
+    if (seenPaths.has(path0)) continue;
+    seenPaths.add(path0);
+    walk(abs, path0, uniqueName(path.basename(abs, '.kicad_sch')));
   }
   // Files not reachable from any root still get converted (standalone sheets).
-  for (const abs of schAbs) if (!nameByFile.has(abs)) nameByFile.set(abs, uniqueName(path.basename(abs, '.kicad_sch')));
+  for (const abs of schAbs) {
+    if (pages.some(p => p.abs === abs)) continue;
+    walk(abs, '/' + (rootUuidOf(abs) || uuid(8)), uniqueName(path.basename(abs, '.kicad_sch')));
+  }
 
-  const pageCount = nameByFile.size;
-  for (const abs of nameByFile.keys()) {
-    const schName = nameByFile.get(abs);
+  const pageCount = pages.length;
+  for (const page of pages) {
+    const abs = page.abs;
+    const schName = page.schName;
     const sch = project.ensureSchematic(schName);
     const sheet = project.ensureSheet(sch, schName);
     const file = project.sheetFile(sheet);
     convertSchematic(abs, file, sch, sheet, {
-      projectName, pageCount, project, nameByFile, sheetNodes: sheetNodesByFile.get(abs) || []
+      projectName, pageCount, project, instancePath: page.instancePath, sheetNodes: page.children
     });
     // The parent page registered this schematic's block symbol; the client
     // keeps that symbol inside the schematic's own .ecfg document.
@@ -399,12 +422,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   // name to the child schematic. The block symbol is appended to the page's
   // embedded docs; the rectangle is placed as a COMPONENT on this page.
   const embeddedBlocks = new Map();
-  const emitSheetBlock = info => {
+  const emitSheetBlock = entry => {
+    const info = entry && entry.node;
     if (!info || !info.target) {
       warn(`schematic: sheet "${info && info.sheetName || '?'}" target file not found, skipped`);
       return;
     }
-    const childName = opts.nameByFile && opts.nameByFile.get(info.target);
+    const childName = entry.schName;
     if (!childName) { warn(`schematic: no schematic for sheet file ${info.sheetFile}`); return; }
     const W = toSch(info.w), H = toSch(info.h);
     // One block symbol per child schematic per page (same schematic placed
@@ -869,8 +893,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const libId = findChildValue(node, 'lib_id');
       if (!libId) continue;
       const props = collectProperties(node);
+      // Reused sheets: the designator/unit live in the instance matching this
+      // page's path, not in the shared symbol properties.
+      const inst = readSymbolInstance(node, opts.instancePath);
       const unitArr = findSub(node, 'unit');
-      const unit = unitArr ? parseInt(unitArr[0], 10) || 1 : 1;
+      const unit = (inst && inst.unit) || (unitArr ? parseInt(unitArr[0], 10) || 1 : 1);
+      const ref = (inst && inst.reference) || props.Reference || '';
       // PWR_FLAG is KiCad's ERC-only marker: it attaches to an existing net but
       // does not name one. Converting it as an EDA power flag (Name=PWR_FLAG)
       // ties together every net that carries a flag (GND/VCC/VPP short).
@@ -880,7 +908,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const powerish = /^power:/i.test(libId) || !!(probeSym && probeSym.isPower);
       const flagName = (probeSym && probeSym.name) || shortLib;
       if (powerish && /PWR_FLAG/i.test(flagName)) {
-        warn(`schematic: ERC flag ${props.Reference || flagName} skipped (not a net identifier)`);
+        warn(`schematic: ERC flag ${ref || flagName} skipped (not a net identifier)`);
         continue;
       }
       // A '#' reference marks a KiCad power/net symbol even when its library
@@ -890,7 +918,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const value = props.Value === '${SIM.PARAMS}'
         ? (props['Sim.Params'] || props.Value || '')
         : (props.Value || '');
-      const forcedPower = /^#/.test(props.Reference || '') && !!value;
+      const forcedPower = /^#/.test(ref) && !!value;
       const lib = ensureSymbolDoc(libId, props.Footprint || '', unit, forcedPower);
       const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');
@@ -956,12 +984,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         // without them the instance renders empty.
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
-        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', props.Reference || 'gge' + (++ggeCounter)));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', ref || 'gge' + (++ggeCounter)));
         // Designator/Name at the KiCad property positions when present,
         // otherwise just right of the origin like official exports.
         const [dsgX, dsgY] = propPos.Reference || [compX + 10, compY];
         const [valX, valY] = propPos.Value || [compX + 10, compY + 10];
-        if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, dsgX, dsgY, null, { fontSize: null }));
+        if (ref) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', ref, dsgX, dsgY, null, { fontSize: null }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', ''));
         if (value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', value, valX, valY, null, { fontSize: null }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
@@ -1228,6 +1256,31 @@ function collectProperties(node) {
 }
 
 // ---- KiCad hierarchical sheets ----
+// Symbols carry their per-instance designator under (instances (project ...
+// (path "/root/sheetUuid" (reference "R1") (unit 1)))). A sheet file placed
+// twice has two entries, so the designator depends on the instance path.
+function readSymbolInstance(node, instancePath) {
+  let best = null, single = null, count = 0;
+  for (const it of node.slice(1)) {
+    if (!Array.isArray(it) || it[0].v !== 'instances') continue;
+    for (const proj of it.slice(1)) {
+      if (!Array.isArray(proj) || proj[0].v !== 'project') continue;
+      for (const p of proj.slice(2)) {
+        if (!Array.isArray(p) || p[0].v !== 'path') continue;
+        count++;
+        const rec = { path: p[1]?.v || '', reference: '', unit: 0 };
+        for (const x of p.slice(2)) {
+          if (!Array.isArray(x)) continue;
+          if (x[0].v === 'reference') rec.reference = x[1]?.v || '';
+          else if (x[0].v === 'unit') rec.unit = parseInt(x[1]?.v, 10) || 0;
+        }
+        if (instancePath && rec.path === instancePath) best = rec;
+        if (!single) single = rec;
+      }
+    }
+  }
+  return best || (count === 1 ? single : null);
+}
 // Reads every (sheet ...) node of a .kicad_sch: rectangle, Sheetname/Sheetfile
 // and the sheet pins (the hierarchical interface to the child page).
 function readSheetNodes(absFile, present) {
@@ -1261,6 +1314,7 @@ function readSheetNodes(absFile, present) {
     }
     out.push({
       x, y, w, h,
+      uuid: findChildValue(node, 'uuid') || '',
       sheetName: props.Sheetname || '',
       sheetFile,
       target: target && present.has(target) ? target : null,
