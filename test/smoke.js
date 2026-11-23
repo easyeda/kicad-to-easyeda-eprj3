@@ -588,6 +588,29 @@ function main() {
     const stylePins = multiSymDocs[0] ? multiSymDocs[0].records.filter(r => r.type === 'PIN').length : 0;
     assert(stylePins === 2, 'De Morgan style-2 pins are not duplicated into the doc', `pins=${stylePins}`);
 
+    // KiCad 10 suffixes embedded symbols (BASE_1) while instances keep the base
+    // lib_id; without a base-name fallback the symbol loses all pins.
+    const suffixSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (lib_symbols
+    (symbol "DIODE_1" (property "Reference" "D") (property "Value" "DIODE")
+      (symbol "DIODE_1_1_1"
+        (pin passive line (at -2 0 0) (length 1) (name "K") (number "1"))
+        (pin passive line (at 2 0 180) (length 1) (name "A") (number "2")))
+    )
+  )
+  (symbol (lib_id "Sim:DIODE") (at 20 20 0) (unit 1)
+    (property "Reference" "D1") (property "Value" "STPSC5H12D"))
+)`;
+    const suffixDir = path.join(tmp, 'suffix-sym');
+    fs.mkdirSync(suffixDir, { recursive: true });
+    fs.writeFileSync(path.join(suffixDir, 'suffix.kicad_sch'), suffixSch);
+    const suffixOut = path.join(tmp, 'suffix-sym-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', suffixDir, suffixOut, '--project-name', 'suffix']);
+    const suffixDocs = docSegments(readRecords(path.join(suffixOut, 'sch', 'suffix', 'suffix.esch2')));
+    const suffixPins = suffixDocs.reduce((n, d) => n + d.records.filter(r => r.type === 'PIN').length, 0);
+    assert(suffixPins === 2,
+      'instances resolve embedded symbols disambiguated as BASE_<n>', `pins=${suffixPins}`);
+
     // Wires that share an endpoint (or meet at a KiCad junction) form ONE
     // EasyEDA WIRE group: separate groups would read as isolated nets.
     const wireSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")

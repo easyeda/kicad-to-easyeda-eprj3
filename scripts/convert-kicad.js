@@ -285,12 +285,25 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     }
   }
 
+  // KiCad 10 disambiguates multiple embedded symbols with the same base name by
+  // appending _<n> (e.g. DIODE_1) while instances still reference the base
+  // lib_id (Simulation_SPICE:DIODE). Fall back to that base-name match.
+  function findLibNode(libId) {
+    const short = libId.split(':').pop();
+    if (libNodes[libId]) return libNodes[libId];
+    if (libNodes[short]) return libNodes[short];
+    for (const key of Object.keys(libNodes)) {
+      if (key.split(':').pop().replace(/_\d+$/, '') === short) return libNodes[key];
+    }
+    return null;
+  }
+
   const libDocs = [];
   const symbolDocs = new Map(); // libId -> one SYMBOL doc holding every used PART/unit
   const usedDevices = {};
   function ensureSymbolDoc(libId, footprintName, unit = 1, forcedPower = false) {
     const shortName = libId.split(':').pop();
-    const libNode = libNodes[libId] || libNodes[shortName];
+    const libNode = findLibNode(libId);
     const libSym = libNode ? nodeSymbol(libNode, unit) : null;
     const name = (libSym && libSym.name) || shortName;
     // Power/net-identifier symbols live in project libraries too; the
@@ -758,7 +771,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       // does not name one. Converting it as an EDA power flag (Name=PWR_FLAG)
       // ties together every net that carries a flag (GND/VCC/VPP short).
       const shortLib = libId.split(':').pop();
-      const libNode = libNodes[libId] || libNodes[shortLib];
+      const libNode = findLibNode(libId);
       const probeSym = libNode ? nodeSymbol(libNode, unit) : null;
       const powerish = /^power:/i.test(libId) || !!(probeSym && probeSym.isPower);
       const flagName = (probeSym && probeSym.name) || shortLib;
@@ -768,7 +781,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       }
       // A '#' reference marks a KiCad power/net symbol even when its library
       // entry lost the (power) marker: hidden power pins define a global net.
-      const forcedPower = /^#/.test(props.Reference || '') && !!props.Value;
+      // KiCad resolves ${SIM.PARAMS} from the Sim.Params field at export time;
+      // do the same so simulation symbols keep their real value text.
+      const value = props.Value === '${SIM.PARAMS}'
+        ? (props['Sim.Params'] || props.Value || '')
+        : (props.Value || '');
+      const forcedPower = /^#/.test(props.Reference || '') && !!value;
       const lib = ensureSymbolDoc(libId, props.Footprint || '', unit, forcedPower);
       const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');
@@ -805,7 +823,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
             ? { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }
             : {
                 Footprints: '[]', Devices: '[]',
-                DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
+                DeviceName: JSON.stringify({ uuid: lib.devUuid, name: value || lib.name || libId, source: '' }),
                 FootprintName: footprintName
                   ? JSON.stringify({ uuid: '', name: footprintName, source: '' })
                   : null,
@@ -824,8 +842,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
-        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
         // Connect the power pin to whatever it sits on (KiCad pin-on-pin).
         emitPinStub(compX, compY);
       } else {
@@ -841,7 +859,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         const [valX, valY] = propPos.Value || [compX + 10, compY + 10];
         if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, dsgX, dsgY, null, { fontSize: null }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', ''));
-        if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value, valX, valY, null, { fontSize: null }));
+        if (value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', value, valX, valY, null, { fontSize: null }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));
