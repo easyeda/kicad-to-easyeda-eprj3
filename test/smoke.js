@@ -591,6 +591,30 @@ function main() {
     assert(desigOf('reused').join(',') === 'R1' && desigOf('reused_2').join(',') === 'R2',
       'each reused-sheet instance gets its own per-path designator',
       desigOf('reused').join(',') + ' / ' + desigOf('reused_2').join(','));
+    // KiCad <=6 stores designators in a root-level (symbol_instances) table.
+    const legacySch = `(kicad_sch (version 20220404) (generator eeschema)
+  (uuid "legacy-root")
+  (lib_symbols
+    (symbol "l:R" (property "Reference" "R")
+      (symbol "R_1_1"
+        (pin passive line (at -2 0 0) (length 1) (name "~") (number "1"))
+        (pin passive line (at 2 0 180) (length 1) (name "~") (number "2")))))
+  (symbol (lib_id "l:R") (at 20 20 0) (unit 1)
+    (property "Reference" "R?") (property "Value" "10k")
+    (uuid "sym-uuid"))
+  (symbol_instances
+    (path "/sym-uuid" (reference "R7") (unit 1) (value "10k") (footprint "")))
+)`;
+    const legacyDir = path.join(tmp, 'legacy-inst');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, 'legacy.kicad_sch'), legacySch);
+    const legacyOut = path.join(tmp, 'legacy-inst-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', legacyDir, legacyOut, '--project-name', 'legacy']);
+    const legacyPage = docSegments(readRecords(path.join(legacyOut, 'sch', 'legacy', 'legacy.esch2'))).pop();
+    const legacyDsg = legacyPage.records.filter(r => r.type === 'ATTR' && r.body.key === 'Designator')
+      .map(r => r.body.value);
+    assert(legacyDsg.join(',') === 'R7',
+      'legacy (symbol_instances) reference is used as the designator', legacyDsg.join(','));
     const childEsch = readRecords(path.join(hierOut, 'sch', 'child', 'child.esch2'));
     const childDocs = docSegments(childEsch);
     const childPage = childDocs[childDocs.length - 1];
@@ -832,6 +856,58 @@ function main() {
     const k10 = nodeSymbol(k10Sym, 1);
     assert(k10.pins.filter(p => p.hide).map(p => p.number).join(',') === '2',
       'KiCad 10 "(hide yes)" marks a pin hidden and "(hide no)" does not');
+    // A hidden power pin that is wired does NOT get an implicit global net in
+    // KiCad (the wire label wins); placing a net flag there split the net.
+    const wiredSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (lib_symbols
+    (symbol "h:INV2" (property "Reference" "U")
+      (symbol "INV2_1_1"
+        (pin input line (at -5.08 0 0) (length 2.54) (name "A") (number "1"))
+        (pin power_in line (at 0 5.08 270) (length 0) (hide yes) (name "VCC") (number "14"))
+      )
+    )
+  )
+  (wire (pts (xy 20 24.92) (xy 40 24.92)))
+  (label "MYVCC" (at 20 24.92 0))
+  (symbol (lib_id "h:INV2") (at 20 30 0) (unit 1)
+    (property "Reference" "U1") (property "Value" "74HC04"))
+)`;
+    const wiredDir = path.join(tmp, 'wired-pin');
+    fs.mkdirSync(wiredDir, { recursive: true });
+    fs.writeFileSync(path.join(wiredDir, 'wired.kicad_sch'), wiredSch);
+    const wiredOut = path.join(tmp, 'wired-pin-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', wiredDir, wiredOut, '--project-name', 'wired']);
+    const wiredPage = docSegments(readRecords(path.join(wiredOut, 'sch', 'wired', 'wired.esch2'))).pop();
+    const wiredFlags = wiredPage.records.filter(r => r.type === 'ATTR' && r.body.key === 'Global Net Name')
+      .map(r => r.body.value);
+    assert(!wiredFlags.includes('VCC'),
+      'a wired hidden power pin keeps the wire net (no VCC net flag)', wiredFlags.join(','));
+    assert(wiredPage.records.some(r => r.type === 'ATTR' && r.body.key === 'NET' && r.body.value === 'MYVCC'),
+      'the label on that wire still names the net');
+    // KiCad connects pins that touch; EasyEDA does not. A stub wire must be
+    // emitted at the shared point (74LS125 output onto a resistor).
+    const touchSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (lib_symbols
+    (symbol "t:R" (property "Reference" "R")
+      (symbol "R_0_1"
+        (pin passive line (at -2.54 0 0) (length 1.27) (name "1") (number "1"))
+        (pin passive line (at 2.54 0 180) (length 1.27) (name "2") (number "2")))))
+  (symbol (lib_id "t:R") (at 20 20 0) (unit 1)
+    (property "Reference" "R1") (property "Value" "10k"))
+  (symbol (lib_id "t:R") (at 25.08 20 0) (unit 1)
+    (property "Reference" "R2") (property "Value" "10k"))
+)`;
+    const touchDir = path.join(tmp, 'touch-pins');
+    fs.mkdirSync(touchDir, { recursive: true });
+    fs.writeFileSync(path.join(touchDir, 'touch.kicad_sch'), touchSch);
+    const touchOut = path.join(tmp, 'touch-pins-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', touchDir, touchOut, '--project-name', 'touch']);
+    const touchPage = docSegments(readRecords(path.join(touchOut, 'sch', 'touch', 'touch.esch2'))).pop();
+    const touchX = 22.54 / 0.254, touchY = 20 / 0.254 - 825;
+    const stub = touchPage.records.find(r => r.type === 'LINE'
+      && Math.abs(r.body.startX - touchX) < 0.001 && Math.abs(r.body.startY - touchY) < 0.001
+      && Math.abs(r.body.endY - (touchY + 1)) < 0.001);
+    assert(!!stub, 'coincident component pins get a connecting stub wire', JSON.stringify(stub && stub.body));
 
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');

@@ -172,12 +172,16 @@ async function main() {
   const rootUuidOf = abs => {
     try { return findChildValue(parseSex(fs.readFileSync(abs, 'utf8')), 'uuid') || ''; } catch (e) { return ''; }
   };
+  const legacyRefs = new Map();
+  for (const abs of schAbs) {
+    for (const [k, v] of readLegacySymbolInstances(abs)) legacyRefs.set(k, v);
+  }
   const pages = [];
   const seenPaths = new Set();
-  const walk = (abs, instancePath, schName) => {
+  const walk = (abs, instancePath, schName, legacyPath) => {
     const nodes = sheetNodesByFile.get(abs) || [];
     const children = nodes.map(node => ({ node, schName: null }));
-    pages.push({ abs, schName, instancePath, children });
+    pages.push({ abs, schName, instancePath, legacyPath, children });
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       if (!n.target) continue;
@@ -188,19 +192,20 @@ async function main() {
       // identity); reused files get a _2/_3 suffix per instance.
       const childName = uniqueName(path.basename(n.target, '.kicad_sch'));
       children[i].schName = childName;
-      walk(n.target, childPath, childName);
+      const childLegacy = legacyPath + (n.uuid || '') + '/';
+      walk(n.target, childPath, childName, childLegacy);
     }
   };
   for (const abs of roots) {
     const path0 = '/' + (rootUuidOf(abs) || uuid(8));
     if (seenPaths.has(path0)) continue;
     seenPaths.add(path0);
-    walk(abs, path0, uniqueName(path.basename(abs, '.kicad_sch')));
+    walk(abs, path0, uniqueName(path.basename(abs, '.kicad_sch')), '/');
   }
   // Files not reachable from any root still get converted (standalone sheets).
   for (const abs of schAbs) {
     if (pages.some(p => p.abs === abs)) continue;
-    walk(abs, '/' + (rootUuidOf(abs) || uuid(8)), uniqueName(path.basename(abs, '.kicad_sch')));
+    walk(abs, '/' + (rootUuidOf(abs) || uuid(8)), uniqueName(path.basename(abs, '.kicad_sch')), '/');
   }
 
   const pageCount = pages.length;
@@ -211,7 +216,8 @@ async function main() {
     const sheet = project.ensureSheet(sch, schName);
     const file = project.sheetFile(sheet);
     convertSchematic(abs, file, sch, sheet, {
-      projectName, pageCount, project, instancePath: page.instancePath, sheetNodes: page.children
+      projectName, pageCount, project, instancePath: page.instancePath,
+      legacyPath: page.legacyPath, legacyRefs, sheetNodes: page.children
     });
     // The parent page registered this schematic's block symbol; the client
     // keeps that symbol inside the schematic's own .ecfg document.
@@ -503,7 +509,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   // EasyEDA does not join two pins that merely sit on the same point (KiCad
   // does); a wire touching that point connects them. KiCad power symbols are
   // placed directly on pins, so give every power flag / net port a 1-unit stub.
+  const stubGroups = new Map();
   const emitPinStub = (cx, cy) => {
+    const key = cx.toFixed(4) + ',' + cy.toFixed(4);
+    if (stubGroups.has(key)) return stubGroups.get(key);
     const groupId = randId();
     ticket++;
     pageRecords.push({ head: { type: 'WIRE', ticket, id: groupId }, body: { zIndex: ticket } });
@@ -515,7 +524,30 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         startX: cx, startY: cy, endX: cx, endY: cy + 1, lineGroup: groupId
       }
     });
+    stubGroups.set(key, groupId);
     return groupId;
+  };
+
+  // World position of a symbol pin. KiCad rotates symbol-local points CCW on
+  // screen (Y-down): x' = px*cos + py*sin, y' = -px*sin + py*cos. Symbol lib
+  // coordinates are Y-up, so the local point is converted first; (mirror y)
+  // flips left-right, (mirror x) flips top-bottom.
+  const pinWorldAt = (node, pin, mirrors, rot) => {
+    const [sx, sy] = findAtXY(node);
+    const a = ((rot || 0) % 360) * Math.PI / 180;
+    const c = Math.cos(a), sn = Math.sin(a);
+    let px = pin.x, py = pin.y;
+    if (mirrors.includes('y')) px = -px;
+    if (mirrors.includes('x')) py = -py;
+    const pdy = -py;
+    return [sx + px * c + pdy * sn, sy - px * sn + pdy * c];
+  };
+  const pinPoints = [];
+  const collectPinPoints = (pins, node, mirrors, rot) => {
+    for (const pin of pins || []) {
+      if (!pin) continue;
+      pinPoints.push(pinWorldAt(node, pin, mirrors, rot));
+    }
   };
 
   // Hidden power_in pins (e.g. 74HC04 pins 7/14) are invisible global net
@@ -547,17 +579,16 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     return d;
   }
   const placeHiddenPowerPins = (pins, node, mirrors, rot) => {
-    const [sx, sy] = findAtXY(node);
-    const a = ((rot || 0) % 360) * Math.PI / 180;
-    const c = Math.cos(a), sn = Math.sin(a);
     for (const pin of pins || []) {
       if (pin.electric !== 'power_in' || !pin.hide || !pin.name) continue;
-      let px = pin.x, py = pin.y;
-      if (mirrors.includes('y')) px = -px;
-      if (mirrors.includes('x')) py = -py;
-      const vx = px, vy = -py;
-      const X = toSch(sx + vx * c + vy * sn);
-      const Y = pageY(sy - vx * sn + vy * c);
+      const [kx, ky] = pinWorldAt(node, pin, mirrors, rot);
+      // KiCad only creates the implicit global net for a hidden power pin when
+      // it is not wired. An attached wire (with its own label) wins; placing a
+      // net flag named after the pin there split the wire net in two
+      // (VCCA/VRH, +3.3V/VCC, +3V3/IOVDD in the demos).
+      if (wireGroupAt(kx, ky)) continue;
+      const X = toSch(kx);
+      const Y = pageY(ky);
       const d = ensureNetflagDoc(pin.name);
       const compId = randId();
       ticket++;
@@ -795,6 +826,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
       pageRecords.push(pageAttr(compId, ++ticket, 'Name', val, X, Y + 10, 'CENTER_TOP', vis));
       pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', val, X, Y + 10, 'CENTER_TOP', vis));
+      // A global label often sits mid-wire; the net flag's own stub is a
+      // separate WIRE group and would not join that wire. Name the touched
+      // wire group too, so same-named groups merge (Q17ng p+/p-).
+      const labelGroup = wireGroupAt(x, y);
+      if (labelGroup) {
+        pageRecords.push(pageAttr(labelGroup, ++ticket, 'NET', val, X, Y, 'CENTER_TOP', { valueVisible: false }));
+      }
       emitPinStub(X, Y);
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
@@ -896,9 +934,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       // Reused sheets: the designator/unit live in the instance matching this
       // page's path, not in the shared symbol properties.
       const inst = readSymbolInstance(node, opts.instancePath);
+      // KiCad <=6: reference lives in the root file's symbol_instances table,
+      // keyed by the symbol uuid under this page's legacy path.
+      const legacy = opts.legacyRefs && opts.legacyRefs.get(
+        (opts.legacyPath || '/') + (findChildValue(node, 'uuid') || ''));
       const unitArr = findSub(node, 'unit');
-      const unit = (inst && inst.unit) || (unitArr ? parseInt(unitArr[0], 10) || 1 : 1);
-      const ref = (inst && inst.reference) || props.Reference || '';
+      const unit = (inst && inst.unit) || (legacy && legacy.unit) || (unitArr ? parseInt(unitArr[0], 10) || 1 : 1);
+      const ref = (inst && inst.reference) || (legacy && legacy.reference) || props.Reference || '';
       // PWR_FLAG is KiCad's ERC-only marker: it attaches to an existing net but
       // does not name one. Converting it as an EDA power flag (Name=PWR_FLAG)
       // ties together every net that carries a flag (GND/VCC/VPP short).
@@ -976,6 +1018,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
         pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
         pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        // The power symbol may sit mid-wire; the stub is its own WIRE group and
+        // would leave the touched wire unnamed/isolated. Name that group too.
+        const powerGroup = wireGroupAt(x, y);
+        if (powerGroup) {
+          pageRecords.push(pageAttr(powerGroup, ++ticket, 'NET', lib.netName || value || lib.name, compX, compY, 'CENTER_TOP', { valueVisible: false }));
+        }
         // Connect the power pin to whatever it sits on (KiCad pin-on-pin).
         emitPinStub(compX, compY);
       } else {
@@ -995,11 +1043,28 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));
+        collectPinPoints(lib.pins, node, mirrors, rot);
         placeHiddenPowerPins(lib.pins, node, mirrors, rot);
       }
-    } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
+    } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'symbol_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
     }
+  }
+
+  // KiCad connects pins that touch each other; EasyEDA keeps coincident pins
+  // isolated unless a wire joins them. Stacked power pins / directly-abutting
+  // symbols (74LS125 output onto a resistor, RP2040 power pins) need a 1-unit
+  // stub at the shared point.
+  const pinHit = new Map();
+  for (const [x, y] of pinPoints) {
+    const k = x.toFixed(4) + ',' + y.toFixed(4);
+    pinHit.set(k, (pinHit.get(k) || 0) + 1);
+  }
+  for (const [k, count] of pinHit) {
+    if (count < 2) continue;
+    const [x, y] = k.split(',').map(Number);
+    if (wireGroupAt(x, y)) continue;
+    emitPinStub(toSch(x), pageY(y));
   }
 
   // Sheet frame (docType 20 "Drawing-Symbol_A4"): the app renders the border
@@ -1256,6 +1321,30 @@ function collectProperties(node) {
 }
 
 // ---- KiCad hierarchical sheets ----
+// KiCad <=6 projects store the designators in a project-wide
+// (symbol_instances) table keyed by "/<sheetUuid>/<symbolUuid>" (root:
+// "/<symbolUuid>"); per-symbol (instances) blocks only appeared in v7+.
+function readLegacySymbolInstances(absFile) {
+  const out = new Map();
+  let root;
+  try { root = parseSex(fs.readFileSync(absFile, 'utf8')); } catch (e) { return out; }
+  for (const node of root.slice(1)) {
+    if (!Array.isArray(node) || node[0].v !== 'symbol_instances') continue;
+    for (const p of node.slice(1)) {
+      if (!Array.isArray(p) || p[0].v !== 'path') continue;
+      const path = p[1]?.v || '';
+      let reference = '', unit = 0;
+      for (const x of p.slice(2)) {
+        if (!Array.isArray(x)) continue;
+        if (x[0].v === 'reference') reference = x[1]?.v || '';
+        else if (x[0].v === 'unit') unit = parseInt(x[1]?.v, 10) || 0;
+      }
+      if (path && reference) out.set(path, { reference, unit });
+    }
+  }
+  return out;
+}
+
 // Symbols carry their per-instance designator under (instances (project ...
 // (path "/root/sheetUuid" (reference "R1") (unit 1)))). A sheet file placed
 // twice has two entries, so the designator depends on the instance path.
