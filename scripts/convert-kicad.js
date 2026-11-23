@@ -23,7 +23,8 @@
  *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→RECT+TEXT+NETLABEL,
  *     symbol→COMPONENT(+ATTR)
  *   PCB: segment→LINE (copper track), arc(track)→ARC, via→VIA, footprint→FOOTPRINT doc
- *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC, gr_rect/gr_poly/gr_circle/
+ *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC (Edge.Cuts arcs are
+ *     flattened and chained into one outline), gr_rect/gr_poly/gr_circle/
  *     bezier/gr_curve→POLY (sampled; the host outline decoder rejects 'C'),
  *     gr_text→STRING, zone→POUR+POURED (keepout→REGION),
  *     dimension→DIMENSION, Edge.Cuts→POLY BOARD_OUTLINE
@@ -35,13 +36,15 @@ const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts } = require('./lib/kicad');
 const {
   buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
-  kicadToSchUnit, flipYSch, circumcenter, arcSweep, mapStroke, mapFill
+  kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
+const { findViolation } = require('./lib/hostpath');
 const { parseArgs, printHelp, die } = require('./lib/utils');
 
 const schema = [
-  { name: 'project-name', hasValue: true, desc: 'Override project name' }
+  { name: 'project-name', hasValue: true, desc: 'Override project name' },
+  { name: 'pour-fineness', hasValue: true, desc: 'Copper pour fill fineness 1-8 (default 8; lower is faster/coarser)' }
 ];
 
 // PCB positions are mil; schematic positions are 0.254 mm units.
@@ -93,7 +96,7 @@ function warn(msg) {
 }
 
 async function main() {
-  const usage = 'convert-kicad.js convert <KiCadProjectDir> <eprj3Dir> [--project-name <name>]';
+  const usage = 'convert-kicad.js convert <KiCadProjectDir> <eprj3Dir> [--project-name <name>] [--pour-fineness <1-8>]';
   const sub = process.argv[2];
   if (!sub || sub === 'help') { printHelp(usage, schema); process.exit(sub ? 0 : 1); }
   if (sub !== 'convert') die(`Unknown command: ${sub}`);
@@ -105,6 +108,10 @@ async function main() {
   const dst = path.resolve(dstArg);
   if (!fs.existsSync(src)) die(`Source not found: ${src}`);
   const projectName = opts['project-name'] || path.basename(src);
+  const pourFineness = opts['pour-fineness'] === undefined ? 8 : Number(opts['pour-fineness']);
+  if (!Number.isInteger(pourFineness) || pourFineness < 1 || pourFineness > 8) {
+    die('--pour-fineness must be an integer between 1 and 8', 1);
+  }
   const project = await Project.create(dst, projectName);
   console.log(`Created eprj3 project at ${dst}`);
 
@@ -123,15 +130,30 @@ async function main() {
   // Walk PCBs
   const pcbs = fs.readdirSync(src).filter(f => f.endsWith('.kicad_pcb'));
   let pcbIdx = 1;
+  const failures = [];
   for (const pcbFile of pcbs) {
     const pcb = project.ensurePcb(`PCB${pcbIdx++}`);
     const file = project.pcbFile(pcb);
-    convertPcb(path.join(src, pcbFile), file, pcb);
-    project.save();
-    console.log(`  pcb: ${pcbFile} -> ${file}`);
+    try {
+      convertPcb(path.join(src, pcbFile), file, pcb, { pourFineness });
+      project.save();
+      console.log(`  pcb: ${pcbFile} -> ${file}`);
+    } catch (e) {
+      // Keep one bad board from aborting the whole batch: drop its index entry
+      // and partial file, report it, and continue with the remaining boards.
+      delete project.profile.profile.pcbs[pcb.uuid];
+      project.save();
+      try { fs.unlinkSync(file); } catch (_) { /* nothing was written */ }
+      failures.push({ file: pcbFile, message: e.message });
+      console.error(`  pcb: ${pcbFile} FAILED: ${e.message}`);
+    }
   }
 
   if (warnCounter > 30) console.warn(`  warn: ... ${warnCounter} warnings total`);
+  if (failures.length) {
+    console.error(`\n${failures.length} PCB(s) failed; the remaining project was written.`);
+    process.exitCode = 1;
+  }
 }
 
 // ---------------------------------------------------------------- schematic
@@ -189,41 +211,62 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   }
 
   const libDocs = [];
-  const usedLibs = {};
-  function ensureSymbolDoc(libId) {
-    if (usedLibs[libId]) return usedLibs[libId];
-    const shortName = libId.split(':').pop();
-    const libSym = libs[libId] || libs[shortName];
-    const name = (libSym && libSym.name) || shortName;
-    const isPower = /^power:/i.test(libId);
-    const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
-    const symDocUuid = uuid(16);
-    const devUuid = uuid(16);
-    const partId = isPower ? MAGIC_PART_ID : name + '.1';
-    const { records: symRecs, nameOff } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] }, {
-      partId,
-      partTitle: isPower ? '' : partId,
-      isPower,
-      netName
-    });
-    libDocs.push(
-      docHead('SYMBOL', symDocUuid),
-      isPower
-        ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
-        : metaRec(name, { docType: 2 }),
-      ...symRecs
-    );
-    libDocs.push(
-      docHead('DEVICE', devUuid),
-      metaRec(name, {
-        images: [],
-        attributes: isPower
-          ? { Symbol: symDocUuid, 'Global Net Name': netName, Description: '', Name: netName, SymbolName: JSON.stringify({ name, uuid: symDocUuid, source: '' }) }
-          : { Symbol: symDocUuid, SymbolName: JSON.stringify({ name, uuid: symDocUuid, source: '' }) }
-      })
-    );
-    usedLibs[libId] = { symDocUuid, devUuid, partId, name, isPower, netName, nameOff };
-    return usedLibs[libId];
+  const usedSymbols = {};
+  const usedDevices = {};
+  function ensureSymbolDoc(libId, footprintName) {
+    let sym = usedSymbols[libId];
+    if (!sym) {
+      const shortName = libId.split(':').pop();
+      const libSym = libs[libId] || libs[shortName];
+      const name = (libSym && libSym.name) || shortName;
+      const isPower = /^power:/i.test(libId);
+      const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
+      const symDocUuid = uuid(16);
+      const partId = isPower ? MAGIC_PART_ID : name + '.1';
+      const { records: symRecs, nameOff } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] }, {
+        partId,
+        partTitle: isPower ? '' : partId,
+        isPower,
+        netName
+      });
+      libDocs.push(
+        docHead('SYMBOL', symDocUuid),
+        isPower
+          ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
+          : metaRec(name, { docType: 2 }),
+        ...symRecs
+      );
+      sym = { symDocUuid, partId, name, isPower, netName, nameOff };
+      usedSymbols[libId] = sym;
+    }
+
+    // One DEVICE per (symbol, footprint): the same KiCad symbol can be placed
+    // with different Footprint properties (R1/R2), and each component must bind
+    // to a device whose FootprintName matches.
+    const fp = footprintName || '';
+    const devKey = libId + '\u0000' + fp;
+    let dev = usedDevices[devKey];
+    if (!dev) {
+      const devUuid = uuid(16);
+      const fpJson = fp ? JSON.stringify({ name: fp, uuid: '', source: '' }) : null;
+      libDocs.push(
+        docHead('DEVICE', devUuid),
+        metaRec(sym.name, {
+          images: [],
+          attributes: sym.isPower
+            ? { Symbol: sym.symDocUuid, 'Global Net Name': sym.netName, Description: '', Name: sym.netName, SymbolName: JSON.stringify({ name: sym.name, uuid: sym.symDocUuid, source: '' }) }
+            : {
+                Symbol: sym.symDocUuid,
+                SymbolName: JSON.stringify({ name: sym.name, uuid: sym.symDocUuid, source: '' }),
+                FootprintName: fpJson,
+                Footprints: '[]'
+              }
+        })
+      );
+      dev = { devUuid };
+      usedDevices[devKey] = dev;
+    }
+    return { ...sym, devUuid: dev.devUuid };
   }
 
   const pageRecords = sheetDocRecords(sch, sheet); // DOCHEAD SCH_PAGE + META + CANVAS
@@ -358,9 +401,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const cx1 = toSch(a.x1), cy1 = pageY(a.y1);
       const cxm = toSch(a.mx), cym = pageY(a.my);
       const cx2 = toSch(a.x2), cy2 = pageY(a.y2);
-      const c = circumcenter(cx1, cy1, cxm, cym, cx2, cy2);
+      // eprj3 schematic ARC refer is a point ON the arc (KiCad's mid), not the
+      // circumcenter; writing the center bends the arc the wrong way.
       rec('ARC', shapeCommon(node, {
-        startX: cx1, startY: cy1, referX: c.x, referY: c.y, endX: cx2, endY: cy2
+        startX: cx1, startY: cy1, referX: cxm, referY: cym, endX: cx2, endY: cy2
       }));
     } else if (head === 'bezier') {
       const pts = extractWirePoints(node);
@@ -391,9 +435,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     } else if (head === 'symbol') {
       const libId = findChildValue(node, 'lib_id');
       if (!libId) continue;
-      const lib = ensureSymbolDoc(libId);
-      const [x, y, rot] = findAtXY(node);
       const props = collectProperties(node);
+      const lib = ensureSymbolDoc(libId, props.Footprint || '');
+      const [x, y, rot] = findAtXY(node);
       const mirrors = findFlags(node, 'mirror');
       // KiCad (mirror y) = left-right flip = eprj3 isMirror; (mirror x) = top-bottom
       // flip = isMirror + 180°. Sheet angles are CCW-on-screen like eprj3 — no flip.
@@ -414,6 +458,11 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         }
       }
       ticket++;
+      // KiCad's Footprint property is the package name for this instance.
+      // eprj3 stores it in attrs.FootprintName as a JSON string ({uuid,name,
+      // source}); the uuid may be empty because the schematic is not bound to
+      // a specific PCB footprint document yet.
+      const footprintName = props.Footprint || '';
       pageRecords.push({
         head: { type: 'COMPONENT', ticket, id: compId },
         body: {
@@ -424,7 +473,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
             : {
                 Footprints: '[]', Devices: '[]',
                 DeviceName: JSON.stringify({ uuid: lib.devUuid, name: props.Value || lib.name || libId, source: '' }),
-                FootprintName: null, pinClass: {}, differentialPairClass: {}, Symbols: '[]'
+                FootprintName: footprintName
+                  ? JSON.stringify({ uuid: '', name: footprintName, source: '' })
+                  : null,
+                pinClass: {}, differentialPairClass: {}, Symbols: '[]'
               },
           zIndex: ++componentZ
         }
@@ -530,14 +582,15 @@ function drawKicadFrame(rec, paper, pageH, f) {
   const X = mm => toSch(mm);
   const Y = mm => flipYSch(mm, pageH);
   const LW = 0.59; // KiCad default 0.15 mm stroke
-  // Every real LINE belongs to a WIRE group record ("所属的导线或总线组 id");
-  // lines whose group record is missing are dropped by the client.
+  // The drawing sheet and its title-block table are graphics, not electrical
+  // wires: emit POLY (折线) records, not WIRE+LINE groups.
   const line = (x1, y1, x2, y2) => {
-    const gid = randId();
-    rec('WIRE', {}, gid);
-    rec('LINE', {
-      fillColor: '', fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: LW,
-      startX: X(x1), startY: Y(y1), endX: X(x2), endY: Y(y2), lineGroup: gid
+    rec('POLY', {
+      partId: '', groupId: '', locked: false,
+      points: [{ x: X(x1), y: Y(y1) }, { x: X(x2), y: Y(y2) }],
+      closed: false, startShape: 'NONE', endShape: 'NONE',
+      strokeColor: null, strokeStyle: 'SOLID', fillColor: '', fillStyle: 'NONE',
+      strokeWidth: LW
     });
   };
   const text = (value, xmm, ymm, fontSize, opts = {}) => {
@@ -571,26 +624,27 @@ function drawKicadFrame(rec, paper, pageH, f) {
     text(n, W - M - 1, H - y, refSize, { align: 'CENTER_MIDDLE' });
   }
 
-  // title block
-  const TX = W - 110, TY = H - 34, BX = W - 2, BY = H - 2;
+  // title block, anchored to the INNER frame border so no cell falls outside
+  const TB_R = W - M - 2, TB_B = H - M - 2;
+  const TX = TB_R - 110, TY = TB_B - 34, BX = TB_R, BY = TB_B;
   line(TX, TY, BX, TY); line(BX, TY, BX, BY); line(BX, BY, TX, BY); line(TX, BY, TX, TY);
-  line(TX, H - 5.5, BX, H - 5.5);
-  line(TX, H - 8.5, BX, H - 8.5);
-  line(TX, H - 12.5, BX, H - 12.5);
-  line(TX, H - 18.5, BX, H - 18.5);
-  line(W - 90, H - 8.5, W - 90, H - 5.5);
-  line(W - 26, H - 8.5, W - 26, BY);
+  line(TX, BY - 3.5, BX, BY - 3.5);
+  line(TX, BY - 6.5, BX, BY - 6.5);
+  line(TX, BY - 10.5, BX, BY - 10.5);
+  line(TX, BY - 16.5, BX, BY - 16.5);
+  line(BX - 88, BY - 6.5, BX - 88, BY - 3.5);
+  line(BX - 24, BY - 6.5, BX - 24, BY);
   const ts = 5.9;  // 1.5 mm default text
-  text(`Id: ${f.sheetNo}/${f.sheetCount}`, W - 24, H - 4.1, ts);
-  text(f.version, W - 109, H - 4.1, ts);
-  text(`Date: ${f.date}`, W - 87, H - 6.9, ts);
-  text(`Rev: ${f.rev}`, W - 24, H - 6.9, ts, { bold: true });
-  text(`Size: ${f.paper}`, W - 109, H - 6.9, ts);
-  text(`Title: ${f.title}`, W - 109, H - 10.7, 7.9, { bold: true, italic: true });
-  text(`File: ${f.file}`, W - 109, H - 14.3, ts);
-  text(`Sheet: ${f.sheetPath}`, W - 109, H - 17, ts);
-  text(f.company, W - 109, H - 20, ts, { bold: true });
-  for (let i = 0; i < 4; i++) text(f.comments[i] || '', W - 109, H - 23 - 3 * i, ts);
+  text(`Id: ${f.sheetNo}/${f.sheetCount}`, BX - 22, BY - 2.1, ts);
+  text(f.version, BX - 107, BY - 2.1, ts);
+  text(`Date: ${f.date}`, BX - 85, BY - 4.9, ts);
+  text(`Rev: ${f.rev}`, BX - 22, BY - 4.9, ts, { bold: true });
+  text(`Size: ${f.paper}`, BX - 107, BY - 4.9, ts);
+  text(`Title: ${f.title}`, BX - 107, BY - 8.7, 7.9, { bold: true, italic: true });
+  text(`File: ${f.file}`, BX - 107, BY - 12.3, ts);
+  text(`Sheet: ${f.sheetPath}`, BX - 107, BY - 15, ts);
+  text(f.company, BX - 107, BY - 18, ts, { bold: true });
+  for (let i = 0; i < 4; i++) text(f.comments[i] || '', BX - 107, BY - 21 - 3 * i, ts);
 }
 
 // KiCad graphical-item stroke/fill → eprj3 schematic shape common fields
@@ -769,7 +823,8 @@ function layerToId(name) {
   return 1;
 }
 
-function convertPcb(srcFile, dst, pcb) {
+function convertPcb(srcFile, dst, pcb, opts = {}) {
+  const pourFineness = opts.pourFineness || 8;
   const root = parseSex(fs.readFileSync(srcFile, 'utf8'));
 
   // (net <num> "<name>") table at board level
@@ -904,7 +959,17 @@ function convertPcb(srcFile, dst, pcb) {
         if (!s || !m || !e) { warn('gr_arc without start/mid/end'); continue; }
         const width = strokeWidthOf(node, 0.15);
         if (isEdge) {
-          outlinePaths.push(arcOutlinePath(s, m, e));
+          // Edge.Cuts arcs are flattened so chainSegments can stitch lines and
+          // arcs into one closed outline. The host cannot chain a standalone
+          // per-arc outline; sampling density follows the sagitta (not a fixed
+          // angle) so large-radius arcs keep the same accuracy as small ones.
+          const segs = arcSegments(
+            toMil(s[0]), flipY(s[1]),
+            toMil(m[0]), flipY(m[1]),
+            toMil(e[0]), flipY(e[1])
+          );
+          if (!segs) { warn('gr_arc with degenerate geometry skipped'); continue; }
+          for (const seg of segs) openSegments.push(seg);
         } else {
           const x1 = toMil(s[0]), y1 = flipY(s[1]);
           const mx = toMil(m[0]), my = flipY(m[1]);
@@ -940,7 +1005,7 @@ function convertPcb(srcFile, dst, pcb) {
         if (!pts || pts.length < 3) continue;
         const flat = [];
         for (const p of pts) flat.push(toMil(p.x), flipY(p.y));
-        const path = [...flat, flat[0], flat[1]];
+        const path = [flat[0], flat[1], 'L', ...flat.slice(2), flat[0], flat[1]];
         if (isEdge) outlinePaths.push(path);
         else push('POLY', { ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)), path, polyType: 'NORMAL' });
       } else if (head === 'bezier' || head === 'gr_curve') {
@@ -970,7 +1035,7 @@ function convertPcb(srcFile, dst, pcb) {
     } else if (head === 'dimension') {
       convertDimension(node, push);
     } else if (head === 'zone') {
-      convertZone(node, { netNames, usedNets, push });
+      convertZone(node, { netNames, usedNets, push, pourFineness });
     } else if (!['kicad_pcb', 'version', 'generator', 'generator_version', 'general', 'paper', 'layers', 'setup', 'net', 'property', 'images', 'group', 'embedded_fonts'].includes(head)) {
       warn(`pcb: unhandled "${head}" skipped`);
     }
@@ -978,13 +1043,17 @@ function convertPcb(srcFile, dst, pcb) {
 
   // Stitch Edge.Cuts line segments into (closed where possible) outline polylines
   for (const chain of chainSegments(openSegments)) {
-    const closed = Math.abs(chain[0] - chain[chain.length - 2]) < 0.5 && Math.abs(chain[1] - chain[chain.length - 1]) < 0.5;
+    const closed = Math.hypot(chain[0] - chain[chain.length - 2], chain[1] - chain[chain.length - 1]) < 0.5;
     const path = closed ? chain : [...chain, chain[0], chain[1]];
     outlinePaths.push(path);
   }
   for (const path of outlinePaths) {
     // Rectangular boards are written as the "R" descriptor in real exports.
-    const outPath = rectDescriptor(path) || path;
+    // Otherwise ensure an explicit 'L' after the first point: tokenless paths
+    // (and bare close-back pairs) hit "invalid rawData" in the host parser.
+    // Nested shapes such as [['CIRCLE',...]] and already-tokened paths are
+    // left untouched.
+    const outPath = rectDescriptor(path) || withLToken(path);
     push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path: outPath, polyType: 'BOARD_OUTLINE' });
   }
 
@@ -1013,7 +1082,12 @@ function convertPcb(srcFile, dst, pcb) {
     if (rec.head.type === 'DOCHEAD') continue;
     rec.head.ticket = ++t;
   }
-  writeRecords(dst, [...libDocs, ...ordered]);
+  // Validate every path-bearing record against the host path grammar before
+  // writing; fail loudly instead of shipping a file the client silently drops.
+  const allRecords = [...libDocs, ...ordered];
+  const bad = findViolation(allRecords);
+  if (bad) throw new Error(`host-path grammar violation in ${bad.type} ${bad.id}: ${bad.reason}`);
+  writeRecords(dst, allRecords);
 }
 
 // KiCad escapes '/' in net names as {slash}; unconnected-(...) placeholders
@@ -1044,13 +1118,33 @@ function strokeWidthOf(node, fallback) {
   return fallback;
 }
 
-// Edge.Cuts arc → closed outline single-polygon with an ARC segment
-function arcOutlinePath(s, m, e) {
-  const x1 = toMil(s[0]), y1 = flipY(s[1]);
-  const mx = toMil(m[0]), my = flipY(m[1]);
-  const x2 = toMil(e[0]), y2 = flipY(e[1]);
-  const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
-  return [x1, y1, 'ARC', r2(sweep), x2, y2, x1, y1];
+// Flat path without a leading instruction token → insert 'L' after the start
+// point. Nested shapes ([['CIRCLE',...]]) and already-tokened paths are kept.
+function withLToken(path) {
+  if (!Array.isArray(path) || !path.length) return path;
+  if (Array.isArray(path[0]) || typeof path[2] === 'string') return path;
+  return [path[0], path[1], 'L', ...path.slice(2)];
+}
+
+// Arc → line segments for Edge.Cuts chaining. Step count follows the radius so
+// the sagitta stays <= 0.2 mil (~5 µm) at any radius (a fixed 2° step would be
+// 15–30 µm off on large-radius arcs).
+function arcSegments(x1, y1, mx, my, x2, y2) {
+  const { cx, cy, sweep } = arcSweep(x1, y1, mx, my, x2, y2);
+  const r = Math.hypot(x1 - cx, y1 - cy);
+  if (!(r > 0.01) || !isFinite(sweep) || Math.abs(sweep) < 0.01) return null;
+  const maxTurn = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - 0.2 / r))) * 180 / Math.PI;
+  const steps = Math.max(2, Math.min(720, Math.ceil(Math.abs(sweep) / Math.max(maxTurn, 0.05))));
+  const a0 = Math.atan2(y1 - cy, x1 - cx);
+  const segs = [];
+  let px = x1, py = y1;
+  for (let i = 1; i <= steps; i++) {
+    const a = a0 + sweep * Math.PI / 180 * (i / steps);
+    const nx = cx + r * Math.cos(a), ny = cy + r * Math.sin(a);
+    segs.push([px, py, nx, ny]);
+    px = nx; py = ny;
+  }
+  return segs;
 }
 
 // KiCad cubic Bezier (4 control points) → sampled open polyline in mil.
@@ -1142,7 +1236,7 @@ function convertDimension(node, push) {
 }
 
 // zone → POUR (+POURED per filled_polygon) or REGION for keepouts
-function convertZone(node, { netNames, usedNets, push }) {
+function convertZone(node, { netNames, usedNets, push, pourFineness }) {
   // POUR.width is stored in mm in eprj3 files (real exports: 0.2) even though
   // every other PCB coordinate is mil.
   const minThick = findSub(node, 'min_thickness');
@@ -1204,7 +1298,12 @@ function convertZone(node, { netNames, usedNets, push }) {
 
   const netArr = findSub(node, 'net');
   const netNameArr = findSub(node, 'net_name');
-  const netName = normNet((netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || '') : ''));
+  // KiCad 8+ writes zones as (net "NAME") instead of a numeric index. The
+  // netNames table is keyed by the numeric index, so fall back to the name
+  // string when the lookup misses (otherwise the pour silently loses its net).
+  const netName = normNet((netNameArr && netNameArr[0]) || (netArr
+    ? (netNames[netArr[0]] || (String(netArr[0]).match(/^\d+$/) ? '' : netArr[0]))
+    : ''));
   if (netName) usedNets.add(netName);
 
   if (!polys.length) { warn('zone without polygon'); return; }
@@ -1216,7 +1315,7 @@ function convertZone(node, { netNames, usedNets, push }) {
       partitionId: '', groupId: 0, locked: false, zIndex: -1,
       netName, layerId: layerToId(lname), width,
       name: (nameArr && nameArr[0]) || `POUR${order + 1}`, order,
-      path: polys, pourType: { pourType: 'SOLID', fineness: 8 }, keepIsland: false
+      path: polys, pourType: { pourType: 'SOLID', fineness: pourFineness || 8 }, keepIsland: false
     }, pourId);
     // poured fill results: one POURED per zone+layer, head id = ["POURED", pourId].
     // POURED.pourFill paths use the 0.254 mm unit (10 mil, like schematic data),
@@ -1271,6 +1370,12 @@ function convertFootprint(node, ctx) {
   const layerArr = findSub(node, 'layer');
   const fpLayer = layerArr ? layerArr[0] : 'F.Cu';
   const pads = extractPads(node);
+  // KiCad board files store the pad angle in board space (library angle +
+  // footprint rotation), while the FOOTPRINT doc is local to the footprint and
+  // the COMPONENT rotation is applied on top. Subtract the footprint angle so
+  // rotated footprints (e.g. J1 at 90°) are not rotated twice.
+  const fpAngle = parseFloat(at && at[2]) || 0;
+  for (const p of pads) p.angle = ((p.angle - fpAngle) % 360 + 360) % 360;
   const shapes = extractFpShapes(node);
   const texts = extractFpTexts(node);
   const lib = ensureFootprintDoc(fpName, { pads, shapes, value: texts.Value || '' });
@@ -1321,7 +1426,10 @@ function pcbAttr(ticket, parentId, key, value, x, y, valueVisible, angle, zIndex
 
 function chainSegments(segments) {
   const EPS = 0.5; // mil
-  const near = (x1, y1, x2, y2) => Math.abs(x1 - x2) < EPS && Math.abs(y1 - y2) < EPS;
+  // Euclidean, not the old box test (|dx|,|dy|): dense arc samples can sit
+  // ~0.5 mil apart in each axis while being ~0.7 mil apart in reality; the box
+  // test would let the greedy chain skip real samples and strand fragments.
+  const near = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2) < EPS;
   const remaining = segments.map(s => s.slice());
   const chains = [];
   while (remaining.length) {

@@ -52,9 +52,11 @@ const STROKE_STYLE_MAP = {
 };
 // KiCad fill: none → no fill; outline/background → solid fill with default color
 function mapStroke(kicadStroke) {
-  // schematic strokes are in 0.254 mm units; keep sub-unit widths (KiCad 0.15 mm ≈ 0.59)
-  const w = kicadStroke && kicadStroke.width != null && isFinite(kicadStroke.width)
-    ? Math.max(0.5, Math.round(kicadToSchUnit(kicadStroke.width) * 100) / 100) : null;
+  // KiCad width 0 means "use the default"; write null so the client uses its
+  // own default (official exports do this). Non-zero widths are in 0.254 mm
+  // units; keep sub-unit widths (KiCad 0.15 mm ≈ 0.59).
+  const raw = kicadStroke && kicadStroke.width != null && isFinite(kicadStroke.width) ? kicadStroke.width : 0;
+  const w = raw > 0 ? Math.max(0.5, Math.round(kicadToSchUnit(raw) * 100) / 100) : null;
   const type = kicadStroke && kicadStroke.type && kicadStroke.type in STROKE_STYLE_MAP
     ? STROKE_STYLE_MAP[kicadStroke.type] : 'SOLID'; // KiCad "default" → solid
   return { strokeWidth: w, strokeStyle: type };
@@ -244,15 +246,15 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         body: { ...common, centerX: schX(sh.cx), centerY: schY(sh.cy), radius: schX(sh.r) }
       });
     } else if (sh.type === 'ARC' && sh.mx != null) {
-      // KiCad arc: start/mid/end. eprj3 ARC: start/refer(center)/end.
-      // Mirror the three points into record space, then recompute the center.
-      const c = circumcenter(schX(sh.x1), schY(sh.y1), schX(sh.mx), schY(sh.my), schX(sh.x2), schY(sh.y2));
+      // KiCad arc: start/mid/end. eprj3 ARC: start/refer/end, where refer is a
+      // point ON the arc (per the format docs — NOT the circumcenter). Writing
+      // the center here bends the arc the wrong way (issue: C1 opening).
       records.push({
         head: { type: 'ARC', ticket, id: 'e' + randId() },
         body: {
           ...common,
           startX: schX(sh.x1), startY: schY(sh.y1),
-          referX: c.x, referY: c.y,
+          referX: schX(sh.mx), referY: schY(sh.my),
           endX: schX(sh.x2), endY: schY(sh.y2)
         }
       });
@@ -489,7 +491,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
         head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
           groupId: 0, netName: '', layerId, width,
-          path: [...flat, flat[0], flat[1]],
+          path: [flat[0], flat[1], 'L', ...flat.slice(2), flat[0], flat[1]],
           locked: false, zIndex: ticket, polyType: 'NORMAL'
         }
       });

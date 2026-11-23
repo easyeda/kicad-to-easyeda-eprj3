@@ -1,6 +1,9 @@
 kicad-project-backups/
 fp-info-cache
 /eprj3/
-example/kicad/kicad-project/~kicad-project.kicad_sch.lck
-example/kicad/kicad-project/_autosave-kicad-project.kicad_pcb
-example/kicad/kicad-project/~_autosave-kicad-project.kicad_pcb.lck
+example/kicad/kicad-project/*.lck
+example/kicad/logs/
+example/kicad/kicad-project/logs/
+.history
+# 临时脚本与产物
+tmp/

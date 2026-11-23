@@ -51,6 +51,8 @@ const kicadSymSample = `(kicad_symbol_lib (version 20220914) (generator kicad_sy
     (property "Footprint" "MY_FP:R_0805" (at 0 0 0) (effects (font (size 1.27 1.27))))
     (symbol "MY_RES_0_1"
       (rectangle (start -1.016 -2.54) (end 1.016 2.54) (stroke (width 0.254) (type default)) (fill (type none)))
+      (polyline (pts (xy -1.016 3.81) (xy 1.016 3.81)) (stroke (width 0) (type default)) (fill (type none)))
+      (arc (start -1.016 2.54) (mid 0 3.048) (end 1.016 2.54) (stroke (width 0.1524) (type default)) (fill (type none)))
     )
     (symbol "MY_RES_1_1"
       (pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))
@@ -65,6 +67,8 @@ const kicadSchSample = `(kicad_sch (version 20230121) (generator eeschema)
       (property "Reference" "R" (at 2 0 90) (effects (font (size 1.27 1.27))))
       (symbol "Device:R_0_1"
         (rectangle (start -1 -2.5) (end 1 2.5) (stroke (width 0.25) (type default)) (fill (type none)))
+        (polyline (pts (xy -1 2.54) (xy 1 2.54)) (stroke (width 0) (type default)) (fill (type none)))
+        (arc (start -1 2.54) (mid 0 3.048) (end 1 2.54) (stroke (width 0.1524) (type default)) (fill (type none)))
       )
       (symbol "Device:R_1_1"
         (pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))
@@ -86,6 +90,7 @@ const kicadSchSample = `(kicad_sch (version 20230121) (generator eeschema)
   (symbol (lib_id "Device:R") (at 30 50 0) (unit 1)
     (property "Reference" "R1" (at 30 48 0) (effects (font (size 1.27 1.27))))
     (property "Value" "10k" (at 30 52 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package:R_0805" (at 30 50 0) (effects (font (size 1.27 1.27))))
   )
 )`;
 
@@ -107,9 +112,11 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
   (zone (net 2) (net_name "VCC") (layer "F.Cu") (name "zone1") (min_thickness 0.2)
     (polygon (pts (xy 0 0) (xy 40 0) (xy 40 30) (xy 0 30)))
     (filled_polygon (layer "F.Cu") (pts (xy 0.5 0.5) (xy 39.5 0.5) (xy 39.5 29.5) (xy 0.5 29.5))))
-  (footprint "R_0603" (layer "F.Cu") (at 5 5)
+  (zone (net "GND") (layer "F.Cu") (name "zone2") (min_thickness 0.2)
+    (polygon (pts (xy 0 0) (xy 20 0) (xy 20 15) (xy 0 15))))
+  (footprint "R_0603" (layer "F.Cu") (at 5 5 90)
     (property "Reference" "R1" (at 5 4 0) (layer "F.SilkS"))
-    (pad "1" smd rect (at -0.75 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
+    (pad "1" smd rect (at -0.75 0 90) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
     (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
     (fp_arc (start -1 -1) (mid 0 0) (end 1 -1) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
   )
@@ -190,7 +197,17 @@ function main() {
     const devHead = devDocsAll[0] && devDocsAll[0].head;
     assert(devName && devHead && devDocsAll.some(d => d.head.body.uuid === devName.uuid),
       'COMPONENT DeviceName uuid references the embedded DEVICE doc');
+    const compDev = devDocsAll.find(d => d.head.body.uuid === devName.uuid);
+    const compDevMeta = compDev && compDev.records.find(r => r.type === 'META');
+    const compDevFp = compDevMeta && compDevMeta.body.attributes && compDevMeta.body.attributes.FootprintName;
+    const devFp = compDevFp ? JSON.parse(compDevFp) : null;
+    assert(!!devFp && devFp.name === 'Package:R_0805' && devFp.uuid === '',
+      'DEVICE META.attributes.FootprintName carries the symbol footprint name');
     assert(typeof comp.body.zIndex === 'number', 'COMPONENT carries a numeric zIndex (official exports)');
+    const compFp = comp.body.attrs.FootprintName ? JSON.parse(comp.body.attrs.FootprintName) : null;
+    assert(!!compFp && compFp.name === 'Package:R_0805' && compFp.uuid === '' && compFp.source === '',
+      'COMPONENT.attrs.FootprintName carries the KiCad footprint name in the official JSON string form',
+      JSON.stringify(comp.body.attrs.FootprintName));
     const symAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Symbol' && r.body.parentId === comp.head.id);
     const devAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Device' && r.body.parentId === comp.head.id);
     assert(symAttr && symAttr.body.value === symDoc.head.body.uuid, 'COMPONENT Symbol ATTR references the SYMBOL doc uuid');
@@ -218,6 +235,13 @@ function main() {
     const pinTypeAttr = symDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Type');
     assert(!!pinTypeAttr && pinTypeAttr.body.value === 'Undefined' && pinTypeAttr.body.x === null,
       'Pin Type ATTR carries the electric type with null position (official shape)');
+    const symArc = symDoc.records.find(r => r.type === 'ARC');
+    assert(!!symArc && Math.abs(symArc.body.referX) < 0.01
+      && Math.abs(symArc.body.referY + kicadToSchUnit(3.048)) < 0.01,
+      'symbol arc refer is the KiCad mid point, not the circumcenter',
+      symArc && JSON.stringify({ referX: symArc.body.referX, referY: symArc.body.referY }));
+    const symZeroStroke = symDoc.records.find(r => r.type === 'POLY' && r.body.strokeWidth === null);
+    assert(!!symZeroStroke, 'KiCad stroke width 0 maps to the client default (null strokeWidth)');
     const compAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.parentId === comp.head.id);
     assert(compAttr && Math.abs(compAttr.body.y - (kicadToSchUnit(48) - 825)) < 0.01
       && Math.abs(compAttr.body.x - kicadToSchUnit(30)) < 0.01,
@@ -258,6 +282,11 @@ function main() {
       'fp_arc becomes a POLY with an ARC path and a valid sweep angle', fpArcPoly && JSON.stringify(fpArcPoly.body.path));
     const pcbComp = pcbDoc.records.find(r => r.type === 'COMPONENT');
     assert(pcbComp && pcbComp.body.layerId === 1, 'PCB COMPONENT placements reference a copper layer');
+    assert(pcbComp && pcbComp.body.angle === 270, 'a footprint rotated 90° keeps a 270° component angle (Y flip)');
+    const fpPad = fpDoc && fpDoc.records.find(r => r.type === 'PAD' && r.body.num === '1');
+    assert(!!fpPad && fpPad.body.padAngle === 0,
+      'pad angle is stored relative to the footprint (no double rotation)',
+      fpPad && JSON.stringify({ padAngle: fpPad.body.padAngle }));
     const pcbDevName = pcbComp && JSON.parse(pcbComp.body.attrs.DeviceName);
     assert(pcbDevName && pcbDevName.uuid === pcbDevDocs[0].head.body.uuid, 'PCB COMPONENT DeviceName references the DEVICE doc');
     const padNet = pcbDoc.records.find(r => r.type === 'PAD_NET');
@@ -285,7 +314,21 @@ function main() {
     const pageCircle = pageDoc.records.find(r => r.type === 'CIRCLE' && Math.abs(r.body.radius - kicadToSchUnit(2)) < 0.01);
     assert(!!pageCircle, 'page circle becomes a CIRCLE');
     const pageArc = pageDoc.records.find(r => r.type === 'ARC');
-    assert(!!pageArc && pageArc.body.referX != null, 'page arc becomes an ARC with a reference center');
+    assert(!!pageArc && Math.abs(pageArc.body.referX - kicadToSchUnit(72.5)) < 0.01
+      && Math.abs(pageArc.body.referY - (kicadToSchUnit(12.5) - 825)) < 0.01,
+      'page arc refer is the KiCad mid point (not the circumcenter)',
+      pageArc && JSON.stringify({ referX: pageArc.body.referX, referY: pageArc.body.referY }));
+    // Drawing sheet / title block: graphics are POLY (not WIRE), and the table
+    // is anchored to the inner A4 border instead of hanging outside it.
+    const framePolys = pageDoc.records.filter(r => r.type === 'POLY' && Array.isArray(r.body.points));
+    assert(framePolys.length > 10, 'drawing sheet frame/table is emitted as POLY records', `polys=${framePolys.length}`);
+    assert(pageDoc.records.filter(r => r.type === 'WIRE').length === 1,
+      'drawing sheet lines are not emitted as WIRE records');
+    const framePt = (x, y) => framePolys.some(r => r.body.points.some(p => Math.abs(p.x - x) < 0.01 && Math.abs(p.y - y) < 0.01));
+    assert(framePt(kicadToSchUnit(297 - 12), flipYSch(210 - 12, 825)),
+      'title block bottom-right sits on the inner A4 border');
+    assert(!framePt(kicadToSchUnit(295), flipYSch(208, 825)),
+      'title block is not drawn outside the frame');
 
     // ---- pcb primitives (new coverage) ----
     const via = pcbDoc.records.find(r => r.type === 'VIA');
@@ -314,9 +357,13 @@ function main() {
     assert(!!str && str.body.layerId === 3, 'gr_text becomes a STRING record');
     const dim = pcbDoc.records.find(r => r.type === 'DIMENSION');
     assert(dim && dim.body.dimensionType === 'LENGTH-CONSTRAINT' && dim.body.controlDot.length === 8, 'dimension becomes a LENGTH-CONSTRAINT DIMENSION');
-    const pour = pcbDoc.records.find(r => r.type === 'POUR');
+    const pours = pcbDoc.records.filter(r => r.type === 'POUR');
+    const pour = pours.find(r => r.body.name === 'zone1');
+    const pour2 = pours.find(r => r.body.name === 'zone2');
     const poured = pcbDoc.records.find(r => r.type === 'POURED');
-    assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1, 'zone becomes a POUR on F.Cu with its net');
+    assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1 && pour.body.pourType.fineness === 8,
+      'zone becomes a POUR on F.Cu with its net (default fineness 8)');
+    assert(pour2 && pour2.body.netName === 'GND', 'zone (net "GND") keeps the name-string net');
     assert(poured && pour && poured.head.id === JSON.stringify(['POURED', pour.head.id]) && poured.body.pourFill.length >= 1,
       'filled_polygon becomes a POURED linked to the POUR');
     assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === JSON.stringify(['NET','VCC'])), 'NET index record exists for zone net');
@@ -374,13 +421,76 @@ function main() {
     assert(!!libFpArc && libFpArc.body.path[2] === 'ARC' && Math.abs(libFpArc.body.path[3]) < 360,
       'library fp_arc becomes a POLY with an ARC path');
 
+    // ---- PCB outline shapes (regressions: circular / polygonal boards) ----
+    const roundrect = [
+      '(gr_line (start 0 25) (end 0 5) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_arc (start 0 5) (mid 1.4645 1.4645) (end 5 0) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_line (start 5 0) (end 35 0) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_arc (start 35 0) (mid 38.5355 1.4645) (end 40 5) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_line (start 40 5) (end 40 25) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_arc (start 40 25) (mid 38.5355 28.5355) (end 35 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_line (start 35 30) (end 5 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      '(gr_arc (start 5 30) (mid 1.4645 28.5355) (end 0 25) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))'
+    ].join('\n  ');
+    const outlineCases = {
+      rect: '(gr_rect (start 0 0) (end 40 30) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      poly: '(gr_poly (pts (xy 0 0) (xy 30 0) (xy 40 20) (xy 15 30) (xy 0 20)) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      circle: '(gr_circle (center 20 20) (end 35 20) (stroke (width 0.05) (type solid)) (fill none) (layer "Edge.Cuts"))',
+      roundrect
+    };
+    for (const [name, shape] of Object.entries(outlineCases)) {
+      const dir = path.join(tmp, 'outline-' + name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'board.kicad_pcb'),
+        `(kicad_pcb (version 20221018) (generator pcbnew)\n  (net 0 "")\n  ${shape}\n)\n`);
+      const out = path.join(tmp, 'outline-out-' + name);
+      run([SCRIPTS + '/convert-kicad.js', 'convert', dir, out, '--project-name', 'board']);
+      const outDocs = docSegments(readRecords(path.join(out, 'pcb', 'PCB1.epcb2')));
+      const outDoc = outDocs[outDocs.length - 1];
+      const outlines2 = outDoc.records.filter(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
+      assert(outlines2.length === 1, `${name} board outline converts to one BOARD_OUTLINE`, `count=${outlines2.length}`);
+      const p = outlines2[0] && outlines2[0].body.path;
+      if (name === 'rect') {
+        assert(Array.isArray(p) && p[0] === 'R', 'rect board outline uses the R descriptor');
+      } else if (name === 'circle') {
+        assert(Array.isArray(p) && Array.isArray(p[0]) && p[0][0] === 'CIRCLE',
+          'circle board outline uses a nested CIRCLE path');
+      } else {
+        const tokens = Array.isArray(p) ? p.filter(v => typeof v === 'string') : [];
+        const pts = Array.isArray(p) ? (p.length - 1) / 2 : 0;
+        assert(Array.isArray(p) && p[2] === 'L' && tokens.every(t => t === 'L'),
+          `${name} board outline is an L-only path`);
+        assert(pts >= (name === 'roundrect' ? 40 : 4), `${name} board outline has enough points`, `points=${pts}`);
+        if (name === 'roundrect') {
+          const pp = [];
+          for (let i = 0; i < p.length; i++) {
+            if (typeof p[i] === 'number' && typeof p[i + 1] === 'number') { pp.push([p[i], p[i + 1]]); i++; }
+          }
+          const xs = pp.map(q => q[0]), ys = pp.map(q => q[1]);
+          assert(Math.abs(Math.min(...xs)) < 0.1 && Math.abs(Math.max(...xs) - kicadToEprj3(40)) < 0.1
+            && Math.abs(Math.min(...ys) + kicadToEprj3(30)) < 0.1 && Math.abs(Math.max(...ys)) < 0.1,
+            'roundrect board outline keeps the 40x30 mm bbox');
+          assert(Math.abs(pp[0][0] - pp[pp.length - 1][0]) < 0.01 && Math.abs(pp[0][1] - pp[pp.length - 1][1]) < 0.01,
+            'roundrect board outline closes on itself');
+        }
+      }
+    }
+
+    // ---- pour fineness option ----
+    const fineDst = path.join(tmp, 'conv-fine');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', tmp, fineDst, '--project-name', 'conv', '--pour-fineness', '1']);
+    const fineDocs = docSegments(readRecords(path.join(fineDst, 'pcb', 'PCB1.epcb2')));
+    const fineDoc = fineDocs[fineDocs.length - 1];
+    const finePour = fineDoc.records.find(r => r.type === 'POUR');
+    assert(finePour && finePour.body.pourType.fineness === 1, '--pour-fineness overrides the default (8)');
+
     // ---- parser (nested unit symbols) ----
     const { parseSymbolFile } = require(path.join(SCRIPTS, 'lib', 'kicad'));
     const syms = parseSymbolFile(path.join(tmp, 'sample.kicad_sym'));
     const myRes = syms.find(s => s.name === 'MY_RES');
     assert(!!myRes, 'kicad parser finds the top-level symbol');
     assert(myRes && myRes.pins.length === 2, 'kicad parser merges pins from nested unit symbols', `pins=${myRes && myRes.pins.length}`);
-    assert(myRes && myRes.shapes.length === 1, 'kicad parser merges shapes from nested unit symbols');
+    assert(myRes && myRes.shapes.length === 3, 'kicad parser merges shapes from nested unit symbols');
     assert(myRes && myRes.properties.Value === 'MY_RES', 'kicad parser reads properties');
 
     // ---- unit conversion ----
