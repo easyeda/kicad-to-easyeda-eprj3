@@ -489,12 +489,14 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         startX: cx, startY: cy, endX: cx, endY: cy + 1, lineGroup: groupId
       }
     });
+    return groupId;
   };
 
   // Wires: KiCad connectivity is geometric across *all* wire segments, while
   // EasyEDA only joins LINEs that belong to the same WIRE group. Emit one
   // WIRE/BUS group per connected wire network (splitting segments at KiCad
   // junctions), otherwise every KiCad wire becomes an isolated net.
+  const emittedWireGroups = [];
   const emitAllWires = () => {    const raw = [];
     for (const node of root.slice(1)) {
       if (!Array.isArray(node) || (node[0].v !== 'wire' && node[0].v !== 'bus')) continue;
@@ -502,7 +504,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const pts = extractWirePoints(node);
       for (let i = 0; i + 1 < pts.length; i++) raw.push({ kind, a: pts[i], b: pts[i + 1] });
     }
-    if (!raw.length) return;
+    if (!raw.length) return emittedWireGroups;
     const junctions = [];
     for (const node of root.slice(1)) {
       if (Array.isArray(node) && node[0].v === 'junction') {
@@ -565,9 +567,26 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
           }
         });
       }
+      emittedWireGroups.push({ groupId, kind, segs: list });
     }
+    return emittedWireGroups;
   };
-  emitAllWires();
+  const wireGroups = emitAllWires();
+  // Which WIRE/BUS group owns a point (KiCad labels attach anywhere on a wire)?
+  const wireGroupAt = (x, y) => {
+    for (const g of wireGroups) {
+      for (const s of g.segs) {
+        const [ax, ay] = s.a, [bx, by] = s.b;
+        const len = Math.hypot(bx - ax, by - ay);
+        if (!len) continue;
+        const cross = (x - ax) * (by - ay) - (y - ay) * (bx - ax);
+        if (Math.abs(cross) / len > 1e-6) continue;
+        const dot = (x - ax) * (bx - ax) + (y - ay) * (by - ay);
+        if (dot >= -1e-6 && dot <= len * len + 1e-6) return g.groupId;
+      }
+    }
+    return null;
+  };
 
   let sheetNodeIdx = 0;
 
@@ -660,7 +679,17 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       }
     } else if (head === 'hierarchical_label') {
       emitNetport(node);
-    } else if (head === 'label' || head === 'global_label') {
+    } else if (head === 'label') {
+      // Local net label: official exports name the net through an ATTR key NET
+      // attached to the WIRE/BUS group (standalone NETLABEL records are not
+      // used for connectivity). A label on a pin gets a stub wire.
+      const [x, y] = findAtXY(node);
+      const val = findValue(node);
+      if (!val) continue;
+      let groupId = wireGroupAt(x, y);
+      if (!groupId) groupId = emitPinStub(toSch(x), pageY(y));
+      pageRecords.push(pageAttr(groupId, ++ticket, 'NET', val, toSch(x), pageY(y), 'LEFT_BOTTOM', { valueVisible: true }));
+    } else if (head === 'global_label') {
       const [x, y] = findAtXY(node);
       const val = findValue(node);
       ticket++;

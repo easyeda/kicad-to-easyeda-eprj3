@@ -222,8 +222,15 @@ function main() {
       'convert-kicad emits Designator/Name ATTRs linked to the component');
     const frameComp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.zIndex === null);
     const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
-    assert(pageAttrs.every(r => r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
-      'every page ATTR.parentId == COMPONENT id (frame attrs belong to the frame COMPONENT)');
+    const wireGroupIds = new Set(pageDoc.records.filter(r => r.type === 'WIRE' || r.type === 'BUS').map(r => r.head.id));
+    assert(pageAttrs.every(r => r.body.parentId === comp.head.id
+        || (frameComp && r.body.parentId === frameComp.head.id)
+        || (r.body.key === 'NET' && wireGroupIds.has(r.body.parentId))),
+      'page ATTRs belong to a COMPONENT (or a NET attr to its WIRE/BUS group)');
+    const netAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'NET');
+    assert(!!netAttr && netAttr.body.value === 'NET1'
+      && pageDoc.records.some(r => (r.type === 'WIRE' || r.type === 'BUS') && r.head.id === netAttr.body.parentId),
+      'local labels become a NET attr attached to the wire group (official form)');
     const wireRec = pageDoc.records.find(r => r.type === 'WIRE');
     assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup)
       && wireRec && pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup === wireRec.head.id),
