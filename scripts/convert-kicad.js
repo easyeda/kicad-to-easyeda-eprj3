@@ -33,7 +33,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { parse: parseSex, nodeSymbol, extractPts } = require('./lib/kicad');
+const { parse: parseSex, nodeSymbol, extractPts, extractPads } = require('./lib/kicad');
 const {
   buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
   kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
@@ -839,16 +839,20 @@ function convertPcb(srcFile, dst, pcb, opts = {}) {
   const libDocs = [];
   const usedFps = {};
   function ensureFootprintDoc(name, fpData) {
-    if (usedFps[name]) return usedFps[name];
+    // KiCad board footprints may share a library name but carry per-instance
+    // edits (e.g. two Connect:1pin footprints with different custom pads), so
+    // key the doc by name + geometry, not by name alone.
+    const anonymized = { ...fpData, pads: fpData.pads.map(p => ({ ...p, netName: '' })) };
+    const key = name + '\u0000' + JSON.stringify({ pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value || '' });
+    if (usedFps[key]) return usedFps[key];
     const docUuid = uuid(16);
     const devUuid = uuid(16);
     // Library docs carry no instance nets — nets are wired per placement via PAD_NET.
-    const anonymized = { ...fpData, pads: fpData.pads.map(p => ({ ...p, netName: '' })) };
     const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value });
     libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...fpRecs);
     libDocs.push(docHead('DEVICE', devUuid), metaRec(name, { images: [], attributes: { Symbol: '', Footprint: docUuid } }));
-    usedFps[name] = { docUuid, devUuid, pads };
-    return usedFps[name];
+    usedFps[key] = { docUuid, devUuid, pads };
+    return usedFps[key];
   }
 
   // DOCHEAD + META + the static editor config block the client requires.
@@ -1453,30 +1457,6 @@ function chainSegments(segments) {
     chains.push(chain);
   }
   return chains;
-}
-
-function extractPads(node) {
-  const pads = [];
-  for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === 'pad') {
-    // (pad "<num>" <smd|thru_hole|np_thru_hole> <rect|circle|oval|roundrect|custom|trapezoid> ...)
-    const pad = { number: it[1]?.v || '', type: it[2]?.v || 'smd', shape: it[3]?.v || 'rect', at: [], size: [], layers: [], angle: 0, netName: '', drill: null, drillOval: null };
-    for (const sub of it.slice(1)) {
-      if (!Array.isArray(sub)) continue;
-      const sh = sub[0].v;
-      if (sh === 'at') { pad.at = sub.slice(1).map(x => x.v); if (pad.at.length > 2) pad.angle = parseFloat(pad.at[2]) || 0; }
-      else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
-      else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
-      else if (sh === 'drill') {
-        const nums = sub.slice(1).filter(x => typeof x.v === 'string' && /^[\d.]+$/.test(x.v)).map(x => x.v);
-        const isOval = sub.slice(1).some(x => x.v === 'oval');
-        pad.drill = nums[0];
-        if (isOval && nums[1]) pad.drillOval = nums[1];
-      }
-      else if (sh === 'net') pad.netName = sub[2]?.v || '';
-    }
-    pads.push(pad);
-  }
-  return pads;
 }
 
 function extractFpShapes(node) {

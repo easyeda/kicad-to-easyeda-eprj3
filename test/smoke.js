@@ -117,6 +117,10 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
   (footprint "R_0603" (layer "F.Cu") (at 5 5 90)
     (property "Reference" "R1" (at 5 4 0) (layer "F.SilkS"))
     (pad "1" smd rect (at -0.75 0 90) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
+    (pad "2" smd custom (at 0.75 0 90) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND")
+      (options (clearance outline) (anchor circle))
+      (primitives
+        (gr_poly (pts (xy -0.4 -0.4) (xy 0.4 -0.4) (xy 0.4 0.4) (xy -0.4 0.4)) (width 0) (fill yes))))
     (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
     (fp_arc (start -1 -1) (mid 0 0) (end 1 -1) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
   )
@@ -287,6 +291,12 @@ function main() {
     assert(!!fpPad && fpPad.body.padAngle === 0,
       'pad angle is stored relative to the footprint (no double rotation)',
       fpPad && JSON.stringify({ padAngle: fpPad.body.padAngle }));
+    const fpCustomFill = fpDoc && fpDoc.records.find(r => r.type === 'FILL' && r.body.layerId === 1);
+    assert(!!fpCustomFill && fpCustomFill.body.fillStyle === 'SOLID' && Array.isArray(fpCustomFill.body.path),
+      'custom pad fill becomes a FILL on F.Cu');
+    const fpCustomPad = fpDoc && fpDoc.records.find(r => r.type === 'PAD' && r.body.num === '2');
+    assert(!!fpCustomPad && fpCustomPad.body.defaultPad.padType === 'ELLIPSE',
+      'custom pad keeps a circular anchor PAD');
     const pcbDevName = pcbComp && JSON.parse(pcbComp.body.attrs.DeviceName);
     assert(pcbDevName && pcbDevName.uuid === pcbDevDocs[0].head.body.uuid, 'PCB COMPONENT DeviceName references the DEVICE doc');
     const padNet = pcbDoc.records.find(r => r.type === 'PAD_NET');

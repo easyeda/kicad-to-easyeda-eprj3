@@ -244,6 +244,45 @@ function strokeWidthOf(node, fallback) {
 }
 
 // (pad "<num>" <smd|thru_hole|np_thru_hole> <rect|circle|oval|roundrect|custom|trapezoid> ...)
+// Custom-pad primitive (inside (primitives ...)): keep the local mm geometry,
+// stroke width and fill; buildFootprintRecords converts it to copper FILL/POLY.
+function extractPadPrimitive(prim) {
+  if (!Array.isArray(prim)) return null;
+  const h = prim[0]?.v;
+  const widthArr = findSub(prim, 'width');
+  const width = widthArr ? parseFloat(widthArr[0]) || 0 : 0;
+  const fillNode = findSubNode(prim, 'fill');
+  const fill = !!(fillNode && fillNode.some(x => x && (x.v === 'yes' || x.v === 'solid'
+    || (Array.isArray(x) && x[1]?.v === 'solid'))));
+  if (h === 'gr_line') {
+    const s = findSub(prim, 'start'), e = findSub(prim, 'end');
+    if (!s || !e) return null;
+    return { kind: 'line', x1: +s[0], y1: +s[1], x2: +e[0], y2: +e[1], width };
+  }
+  if (h === 'gr_poly') {
+    const pts = extractPts(prim);
+    if (!pts.length) return null;
+    return { kind: 'poly', pts, width, fill };
+  }
+  if (h === 'gr_circle') {
+    const c = findSub(prim, 'center'), e = findSub(prim, 'end');
+    if (!c || !e) return null;
+    return { kind: 'circle', cx: +c[0], cy: +c[1], r: Math.hypot(+e[0] - +c[0], +e[1] - +c[1]), width, fill };
+  }
+  if (h === 'gr_arc') {
+    const s = findSub(prim, 'start'), m = findSub(prim, 'mid'), e = findSub(prim, 'end');
+    if (!s || !m || !e) return null;
+    return { kind: 'arc', x1: +s[0], y1: +s[1], mx: +m[0], my: +m[1], x2: +e[0], y2: +e[1], width };
+  }
+  if (h === 'gr_rect') {
+    const s = findSub(prim, 'start'), e = findSub(prim, 'end');
+    if (!s || !e) return null;
+    const x1 = +s[0], y1 = +s[1], x2 = +e[0], y2 = +e[1];
+    return { kind: 'poly', pts: [{ x: x1, y: y1 }, { x: x2, y: y1 }, { x: x2, y: y2 }, { x: x1, y: y2 }], width, fill };
+  }
+  return null;
+}
+
 function extractPads(node) {
   const pads = [];
   for (const it of node.slice(1)) if (Array.isArray(it) && it[0].v === 'pad') {
@@ -261,6 +300,13 @@ function extractPads(node) {
         if (isOval && nums[1]) pad.drillOval = nums[1];
       }
       else if (sh === 'net') pad.netName = sub[2]?.v || '';
+      else if (sh === 'primitives') {
+        pad.primitives = sub.slice(1).filter(Array.isArray).map(extractPadPrimitive).filter(Boolean);
+      }
+      else if (sh === 'options') {
+        const anchor = findSub(sub, 'anchor');
+        pad.anchor = anchor ? anchor[0] : '';
+      }
     }
     pads.push(pad);
   }

@@ -392,7 +392,11 @@ function footprintPadHole(pad) {
 function footprintPadRecord(pad, opts = {}) {
   const [x, y] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
-  const shape = PAD_SHAPE_MAP[pad.shape] || 'RECT';
+  // A custom pad keeps a small anchor pad for connectivity; its real copper is
+  // emitted as FILL/POLY shapes from (primitives ...).
+  const shape = pad.shape === 'custom'
+    ? (pad.anchor === 'circle' ? 'ELLIPSE' : 'RECT')
+    : (PAD_SHAPE_MAP[pad.shape] || 'RECT');
   return {
     head: { type: 'PAD', ticket: opts.ticket, id: opts.id },
     body: {
@@ -414,11 +418,52 @@ function footprintPadRecord(pad, opts = {}) {
   };
 }
 
+// Custom pad primitives (KiCad local mm) → copper shapes in footprint-record
+// coordinates (mil, footprint-local). The pad's local angle is applied here;
+// the component rotation is applied by the client when placing the footprint.
+function padLocalTransform(pad) {
+  const at = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
+  const cx = kicadToEprj3(parseFloat(at[0]) || 0);
+  const cy = flipY(parseFloat(at[1]) || 0);
+  const a = flipRot(parseFloat(pad.angle) || 0) * Math.PI / 180;
+  const ca = Math.cos(a), sa = Math.sin(a);
+  return (x, y) => {
+    const vx = kicadToEprj3(x), vy = flipY(y);
+    return { x: cx + vx * ca - vy * sa, y: cy + vx * sa + vy * ca };
+  };
+}
+
+function collectCustomPadShapes(pads) {
+  const out = [];
+  for (const pad of pads || []) {
+    if (!pad.primitives || !pad.primitives.length) continue;
+    const T = padLocalTransform(pad);
+    const layerId = (pad.layers || []).some(l => /^B\./.test(l)) ? 2 : 1;
+    for (const p of pad.primitives) {
+      if (p.kind === 'line') {
+        const a = T(p.x1, p.y1), b = T(p.x2, p.y2);
+        out.push({ kind: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: kicadToEprj3(p.width), layerId });
+      } else if (p.kind === 'arc') {
+        const a = T(p.x1, p.y1), m = T(p.mx, p.my), b = T(p.x2, p.y2);
+        out.push({ kind: 'arc', x1: a.x, y1: a.y, mx: m.x, my: m.y, x2: b.x, y2: b.y, width: kicadToEprj3(p.width), layerId });
+      } else if (p.kind === 'circle') {
+        const c = T(p.cx, p.cy);
+        out.push({ kind: 'circle', cx: c.x, cy: c.y, r: kicadToEprj3(p.r), width: kicadToEprj3(p.width), fill: p.fill, layerId });
+      } else if (p.kind === 'poly') {
+        const pts = (p.pts || []).map(q => T(q.x, q.y));
+        if (pts.length >= 3) out.push({ kind: 'poly', pts, width: kicadToEprj3(p.width), fill: p.fill, layerId });
+      }
+    }
+  }
+  return out;
+}
+
 function buildFootprintRecords(kicadFp, opts = {}) {
   const partId = 'pid' + randId();
   const records = [];
   const padIds = [];
   let ticket = 1;
+  const customShapes = collectCustomPadShapes(kicadFp.pads);
 
   // BBOX from pads and silk shapes (mil, Y-up)
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -444,6 +489,16 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     } else {
       add(kicadToEprj3(sh.x1), flipY(sh.y1));
       add(kicadToEprj3(sh.x2), flipY(sh.y2));
+    }
+  }
+  for (const sh of customShapes) {
+    if (sh.kind === 'line' || sh.kind === 'arc') {
+      add(sh.x1, sh.y1); add(sh.x2, sh.y2);
+      if (sh.mx != null) add(sh.mx, sh.my);
+    } else if (sh.kind === 'circle') {
+      add(sh.cx - sh.r, sh.cy - sh.r); add(sh.cx + sh.r, sh.cy + sh.r);
+    } else if (sh.kind === 'poly') {
+      for (const p of sh.pts) add(p.x, p.y);
     }
   }
   if (!isFinite(minX)) { minX = -100; minY = -100; maxX = 100; maxY = 100; }
@@ -535,6 +590,61 @@ function buildFootprintRecords(kicadFp, opts = {}) {
           locked: false, zIndex: ticket, polyType: 'NORMAL'
         }
       });
+    }
+  }
+
+  // Custom-pad copper: KiCad custom pads are a union of primitives. Render them
+  // as FILL (filled polygons/circles) or POLY (stroked lines/arcs/circles) on
+  // the pad's copper layer, inside the footprint doc; the small anchor PAD is
+  // kept for net connectivity.
+  for (const sh of customShapes) {
+    ticket++;
+    const id = 'e' + randId();
+    const width = Math.max(1, sh.width || 1);
+    if (sh.kind === 'poly') {
+      const first = sh.pts[0], last = sh.pts[sh.pts.length - 1];
+      const path = [first.x, first.y, 'L', ...sh.pts.slice(1).flatMap(p => [p.x, p.y])];
+      if (Math.abs(first.x - last.x) > 1e-6 || Math.abs(first.y - last.y) > 1e-6) path.push(first.x, first.y);
+      if (sh.fill) {
+        records.push({
+          head: { type: 'FILL', ticket, id },
+          body: {
+            groupId: 0, netName: '', layerId: sh.layerId, width: 0.2, fillStyle: 'SOLID',
+            path, locked: false, zIndex: ticket, isBridgingCopper: false, networkList: [], refs: []
+          }
+        });
+      } else {
+        records.push({
+          head: { type: 'POLY', ticket, id },
+          body: { groupId: 0, netName: '', layerId: sh.layerId, width, path, locked: false, zIndex: ticket, polyType: 'NORMAL' }
+        });
+      }
+    } else if (sh.kind === 'line') {
+      records.push({
+        head: { type: 'POLY', ticket, id },
+        body: { groupId: 0, netName: '', layerId: sh.layerId, width, path: [sh.x1, sh.y1, 'L', sh.x2, sh.y2], locked: false, zIndex: ticket, polyType: 'NORMAL' }
+      });
+    } else if (sh.kind === 'arc') {
+      const { sweep } = arcSweep(sh.x1, sh.y1, sh.mx, sh.my, sh.x2, sh.y2);
+      const angle = Math.round(sweep * 100) / 100;
+      if (angle === 0 || Math.abs(angle) === 360) continue;
+      records.push({
+        head: { type: 'POLY', ticket, id },
+        body: { groupId: 0, netName: '', layerId: sh.layerId, width, path: [sh.x1, sh.y1, 'ARC', angle, sh.x2, sh.y2], locked: false, zIndex: ticket, polyType: 'NORMAL' }
+      });
+    } else if (sh.kind === 'circle') {
+      const path = [['CIRCLE', sh.cx, sh.cy, sh.r, 1]];
+      if (sh.fill) {
+        records.push({
+          head: { type: 'FILL', ticket, id },
+          body: { groupId: 0, netName: '', layerId: sh.layerId, width: 0.2, fillStyle: 'SOLID', path, locked: false, zIndex: ticket, isBridgingCopper: false, networkList: [], refs: [] }
+        });
+      } else {
+        records.push({
+          head: { type: 'POLY', ticket, id },
+          body: { groupId: 0, netName: '', layerId: sh.layerId, width, path, locked: false, zIndex: ticket, polyType: 'NORMAL' }
+        });
+      }
     }
   }
 
