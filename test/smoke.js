@@ -757,6 +757,32 @@ function main() {
     assert(!!hashPowerComp && hashAttrs.some(a => a.body.key === 'Global Net Name' && a.body.value === 'VPP'),
       'a # reference without (power) still converts to a power flag (VPP)');
 
+    // Invisible power pins (74HC04 pins 7/14) are global net connections in
+    // KiCad; EasyEDA needs an explicit net flag at the pin.
+    const hidSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (lib_symbols
+    (symbol "h:INV" (property "Reference" "U")
+      (symbol "INV_1_1"
+        (pin input line (at -5.08 0 0) (length 2.54) (name "A") (number "1"))
+        (pin output line (at 5.08 0 180) (length 2.54) (name "Y") (number "2"))
+        (pin power_in line (at 0 5.08 270) (length 0) hide (name "VCC") (number "14"))
+        (pin power_in line (at 0 -5.08 90) (length 0) hide (name "GND") (number "7"))
+      )
+    )
+  )
+  (symbol (lib_id "h:INV") (at 40 40 0) (unit 1)
+    (property "Reference" "U1") (property "Value" "74HC04"))
+)`;
+    const hidDir = path.join(tmp, 'hidden-pin');
+    fs.mkdirSync(hidDir, { recursive: true });
+    fs.writeFileSync(path.join(hidDir, 'hid.kicad_sch'), hidSch);
+    const hidOut = path.join(tmp, 'hidden-pin-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', hidDir, hidOut, '--project-name', 'hid']);
+    const hidPage = docSegments(readRecords(path.join(hidOut, 'sch', 'hid', 'hid.esch2'))).pop();
+    const hidNames = hidPage.records.filter(r => r.type === 'ATTR' && r.body.key === 'Global Net Name').map(r => r.body.value);
+    assert(hidNames.includes('VCC') && hidNames.includes('GND'),
+      'hidden power_in pins get VCC/GND net flags', hidNames.join(','));
+
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');
     run([SCRIPTS + '/convert-kicad.js', 'convert', tmp, fineDst, '--project-name', 'conv', '--pour-fineness', '1']);

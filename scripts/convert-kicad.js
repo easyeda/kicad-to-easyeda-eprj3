@@ -327,7 +327,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
             ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
             : metaRec(name, { docType: 2 })
         ],
-        parts: new Map()
+        parts: new Map(),
+        unitPins: new Map()
       };
       // keep DOCHEAD uuid in sync with the doc uuid
       doc.records[0].body.uuid = doc.uuid;
@@ -351,9 +352,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         : records;
       doc.records.push(...recs);
       doc.parts.set(unit, partId);
+      doc.unitPins.set(unit, (libSym && libSym.pins) || []);
       if (nameOff) doc.nameOff = nameOff;
     }
-    const sym = { symDocUuid: doc.uuid, partId, name, isPower, netName, nameOff: doc.nameOff };
+    const sym = { symDocUuid: doc.uuid, partId, name, isPower, netName, nameOff: doc.nameOff, pins: doc.unitPins.get(unit) || [] };
 
     // One DEVICE per (symbol, footprint): the same KiCad symbol can be placed
     // with different Footprint properties (R1/R2), and each component must bind
@@ -490,6 +492,64 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       }
     });
     return groupId;
+  };
+
+  // Hidden power_in pins (e.g. 74HC04 pins 7/14) are invisible global net
+  // connections in KiCad. EasyEDA has no implicit power-pin nets, so place a
+  // netflag component bound to the pin name at each such pin.
+  const netflagDocs = new Map();
+  function ensureNetflagDoc(netName) {
+    let d = netflagDocs.get(netName);
+    if (d) return d;
+    const symUuid = uuid(16);
+    const devUuid = uuid(16);
+    const synthetic = {
+      name: netName, isPower: true, properties: { Value: netName },
+      pins: [{ name: netName, number: '1', x: 0, y: 0, rotation: 90, length: 0, electric: 'power_in', style: 'line' }],
+      shapes: []
+    };
+    const { records } = buildSymbolRecords(synthetic, {
+      partId: MAGIC_PART_ID, partTitle: '', isPower: true, netName
+    });
+    libDocs.push(
+      docHead('SYMBOL', symUuid),
+      { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: netName, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } },
+      ...records,
+      docHead('DEVICE', devUuid),
+      metaRec(netName, { images: [], attributes: { Symbol: symUuid, 'Global Net Name': netName, Description: '', Name: netName, SymbolName: JSON.stringify({ name: netName, uuid: symUuid, source: '' }) } })
+    );
+    d = { symUuid, devUuid, netName };
+    netflagDocs.set(netName, d);
+    return d;
+  }
+  const placeHiddenPowerPins = (pins, node, mirrors, rot) => {
+    const [sx, sy] = findAtXY(node);
+    const a = ((rot || 0) % 360) * Math.PI / 180;
+    const c = Math.cos(a), sn = Math.sin(a);
+    for (const pin of pins || []) {
+      if (pin.electric !== 'power_in' || !pin.hide || !pin.name) continue;
+      let px = pin.x, py = pin.y;
+      if (mirrors.includes('y')) px = -px;
+      if (mirrors.includes('x')) py = -py;
+      const vx = px, vy = -py;
+      const X = toSch(sx + vx * c + vy * sn);
+      const Y = pageY(sy - vx * sn + vy * c);
+      const d = ensureNetflagDoc(pin.name);
+      const compId = randId();
+      ticket++;
+      pageRecords.push({
+        head: { type: 'COMPONENT', ticket, id: compId },
+        body: { partId: MAGIC_PART_ID, x: X, y: Y, rotation: 0, isMirror: false,
+          attrs: { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }, zIndex: ++componentZ }
+      });
+      const vis = { fontSize: null, keyVisible: null, valueVisible: null };
+      pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', d.symUuid, X, Y + 10, null, vis));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', d.devUuid));
+      pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
+      pageRecords.push(pageAttr(compId, ++ticket, 'Name', pin.name, X, Y + 10, 'CENTER_TOP', vis));
+      pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', pin.name, X, Y + 10, 'CENTER_TOP', vis));
+      emitPinStub(X, Y);
+    }
   };
 
   // Wires: KiCad connectivity is geometric across *all* wire segments, while
@@ -892,6 +952,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));
+        placeHiddenPowerPins(lib.pins, node, mirrors, rot);
       }
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
