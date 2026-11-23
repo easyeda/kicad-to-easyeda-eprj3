@@ -39,12 +39,10 @@ function flipYSch(val, pageHeight) {
   return kicadToSchUnit(val) - (pageHeight || 825);
 }
 
-// Mirrored rotation sense caused by a Y flip (PCB path only; schematic angles
-// pass through unchanged because both KiCad and eprj3 measure CCW on screen).
-function flipRot(deg) {
-  const r = ((360 - (parseFloat(deg) || 0)) % 360 + 360) % 360;
-  return r;
-}
+// PCB rotations (component / pad / text angles) pass through unchanged: KiCad
+// and eprj3 both measure rotation counter-clockwise on screen, and the PCB Y
+// flip is applied to coordinates only. The old flipRot() negation put rotated
+// footprints on the wrong side of their anchor (carte_test U1/J1 offset).
 
 // ---- KiCad stroke/fill → eprj3 string enums (official e-stroke-style / e-sch-fill-style) ----
 const STROKE_STYLE_MAP = {
@@ -402,7 +400,7 @@ function footprintPadRecord(pad, opts = {}) {
     body: {
       groupId: 0, netName: pad.netName || '', layerId: footprintPadLayerId(pad), num: pad.number || '',
       centerX: kicadToEprj3(parseFloat(x)), centerY: flipY(parseFloat(y)),
-      padAngle: flipRot(pad.angle), hole: footprintPadHole(pad),
+      padAngle: ((parseFloat(pad.angle) || 0) % 360 + 360) % 360, hole: footprintPadHole(pad),
       defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: 0 },
       specialPad: [],
       padOffsetX: 0, padOffsetY: 0,
@@ -425,7 +423,7 @@ function padLocalTransform(pad) {
   const at = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const cx = kicadToEprj3(parseFloat(at[0]) || 0);
   const cy = flipY(parseFloat(at[1]) || 0);
-  const a = flipRot(parseFloat(pad.angle) || 0) * Math.PI / 180;
+  const a = ((((parseFloat(pad.angle) || 0) % 360) + 360) % 360) * Math.PI / 180;
   const ca = Math.cos(a), sa = Math.sin(a);
   return (x, y) => {
     const vx = kicadToEprj3(x), vy = flipY(y);
@@ -679,6 +677,6 @@ function buildFootprintRecords(kicadFp, opts = {}) {
 
 module.exports = {
   buildSymbolRecords, buildFootprintRecords, footprintPadRecord,
-  kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, flipRot, circumcenter, arcSweep,
+  kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

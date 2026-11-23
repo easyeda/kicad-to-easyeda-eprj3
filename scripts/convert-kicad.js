@@ -35,7 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts, extractPads } = require('./lib/kicad');
 const {
-  buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
+  buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY,
   kicadToSchUnit, flipYSch, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
@@ -219,7 +219,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const shortName = libId.split(':').pop();
       const libSym = libs[libId] || libs[shortName];
       const name = (libSym && libSym.name) || shortName;
-      const isPower = /^power:/i.test(libId);
+      // Power/net-identifier symbols live in project libraries too; the
+      // (power) marker in the lib_symbols entry is authoritative, not the
+      // "power:" lib_id prefix.
+      const isPower = /^power:/i.test(libId) || !!(libSym && libSym.isPower);
       const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
       const symDocUuid = uuid(16);
       const partId = isPower ? MAGIC_PART_ID : name + '.1';
@@ -1192,7 +1195,8 @@ function pcbString(node, val) {
     bold: font && findFlags(font, 'bold').length ? 1 : 0,
     italic: font && findFlags(font, 'italic').length ? 1 : 0,
     origin: `${h}_${v}`,
-    angle: flipRot(at && at[2] || 0),
+    // PCB angles are CCW on screen in both formats - pass KiCad's angle through.
+    angle: (((parseFloat(at && at[2]) || 0) % 360) + 360) % 360,
     reverse: !!knockout, expansion: 0,
     mirror: layerId === 2,
     specialColor: null
@@ -1386,7 +1390,10 @@ function convertFootprint(node, ctx) {
   for (const p of pads) { const n = normNet(p.netName); if (n) usedNets.add(n); }
 
   const compId = randId();
-  const compAngle = flipRot(at && at[2] || 0);
+  // KiCad and eprj3 both rotate CCW on screen, so the footprint angle passes
+  // through unchanged. Negating it (the old Y-flip reasoning) rotated the
+  // footprint's internals to the wrong side of the anchor — the U1/J1 offset.
+  const compAngle = (((parseFloat(at && at[2]) || 0) % 360) + 360) % 360;
   const cx = toMil(at && at[0] || 0);
   const cy = flipY(at && at[1] || 0);
   const pinSwapInfo = {};

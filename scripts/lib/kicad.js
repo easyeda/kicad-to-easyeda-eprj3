@@ -84,20 +84,25 @@ function extractArc(node) {
 }
 
 function nodeSymbol(node) {
-  const out = { name: '', properties: {}, pins: [], shapes: [], hidePinNumbers: false, hidePinNames: false };
+  const out = { name: '', properties: {}, pins: [], shapes: [], hidePinNumbers: false, hidePinNames: false, isPower: false };
   if (!Array.isArray(node) || !node.length || node[0].v !== 'symbol') return out;
   out.name = node[1]?.v || '';
   for (let i = 2; i < node.length; i++) {
     const it = node[i];
     if (!Array.isArray(it) || !it.length || typeof it[0]?.v !== 'string') continue;
     const head = it[0].v;
-    if (head === 'symbol') {
+    if (head === 'power') {
+      // KiCad power/net-identifier symbols carry a bare (power) marker even
+      // when they live in a project library (lib_id is not "power:...").
+      out.isPower = true;
+    } else if (head === 'symbol') {
       // KiCad 6+ nests per-unit graphics in (symbol "NAME_0_1") / (symbol "NAME_1_1")
       const sub = nodeSymbol(it);
       out.pins.push(...sub.pins);
       out.shapes.push(...sub.shapes);
       if (sub.hidePinNumbers) out.hidePinNumbers = true;
       if (sub.hidePinNames) out.hidePinNames = true;
+      if (sub.isPower) out.isPower = true;
       if (!out.name && sub.name) out.name = sub.name;
     } else if (head === 'pin_numbers') {
       // (pin_numbers (hide yes)) or (pin_numbers hide)

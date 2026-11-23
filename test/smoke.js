@@ -286,7 +286,9 @@ function main() {
       'fp_arc becomes a POLY with an ARC path and a valid sweep angle', fpArcPoly && JSON.stringify(fpArcPoly.body.path));
     const pcbComp = pcbDoc.records.find(r => r.type === 'COMPONENT');
     assert(pcbComp && pcbComp.body.layerId === 1, 'PCB COMPONENT placements reference a copper layer');
-    assert(pcbComp && pcbComp.body.angle === 270, 'a footprint rotated 90° keeps a 270° component angle (Y flip)');
+    assert(pcbComp && pcbComp.body.angle === 90,
+      'a footprint rotated 90° keeps a 90° component angle (both formats are CCW on screen)',
+      pcbComp && pcbComp.body.angle);
     const fpPad = fpDoc && fpDoc.records.find(r => r.type === 'PAD' && r.body.num === '1');
     assert(!!fpPad && fpPad.body.padAngle === 0,
       'pad angle is stored relative to the footprint (no double rotation)',
@@ -485,6 +487,60 @@ function main() {
         }
       }
     }
+
+    // ---- power/net-identifier symbols from project libraries ----
+    // KiCad marks power symbols with a bare (power) node; the lib_id does NOT
+    // have to start with "power:" (project-local symbols such as
+    // custom_pads_schlib:GND). They must become EasyEDA power flags
+    // (MAGIC_PART_ID, docType 18, DeviceName null), not regular devices.
+    const powerSch = `(kicad_sch (version 20230121) (generator eeschema)
+  (lib_symbols
+    (symbol "custom_pads_schlib:GND" (power) (pin_names (offset 0))
+      (property "Reference" "#PWR" (at 0 -6.35 0))
+      (property "Value" "GND" (at 0 -3.81 0))
+      (property "Footprint" "" (at 0 0 0))
+      (symbol "GND_0_1"
+        (polyline (pts (xy 0 0) (xy 0 -1.27)) (stroke (width 0) (type default)) (fill (type none)))
+      )
+      (symbol "GND_1_1"
+        (pin power_in line (at 0 0 270) (length 0) (name "GND") (number "1"))
+      )
+    )
+  )
+  (symbol (lib_id "custom_pads_schlib:GND") (at 50 60 0) (unit 1)
+    (property "Reference" "#PWR01" (at 50 66 0))
+    (property "Value" "GND" (at 50 63 0))
+    (property "Footprint" "" (at 50 60 0))
+  )
+)`;
+    const powerDir = path.join(tmp, 'power-sym');
+    fs.mkdirSync(powerDir, { recursive: true });
+    fs.writeFileSync(path.join(powerDir, 'power.kicad_sch'), powerSch);
+    const powerOut = path.join(tmp, 'power-sym-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', powerDir, powerOut, '--project-name', 'power']);
+    const { parse: parseSex, nodeSymbol } = require(path.join(SCRIPTS, 'lib', 'kicad'));
+    const powerLib = parseSex(powerSch).slice(1).find(n => Array.isArray(n) && n[0].v === 'lib_symbols');
+    const gndSymNode = powerLib.slice(1).find(n => Array.isArray(n) && n[0].v === 'symbol');
+    assert(nodeSymbol(gndSymNode).isPower === true,
+      'KiCad parser flags (power) symbols even without the power: lib_id prefix');
+    const powerEsch = readRecords(path.join(powerOut, 'sch', 'Schematic1', 'P1.esch2'));
+    const powerDocs = docSegments(powerEsch);
+    const powerPage = powerDocs[powerDocs.length - 1];
+    const powerSymDoc = powerDocs.find(d => d.head.body.docType === 'SYMBOL'
+      && (d.records.find(r => r.type === 'META') || {}).body?.docType === 18);
+    const powerPart = powerSymDoc && powerSymDoc.records.find(r => r.type === 'PART');
+    assert(!!powerSymDoc && !!powerPart && powerPart.head.id === 'pid8a0e77bacb214e',
+      'project-library power symbol embeds a docType-18 SYMBOL doc with the built-in power partId',
+      JSON.stringify(powerPart && powerPart.head.id));
+    const powerComp = powerPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === 'pid8a0e77bacb214e');
+    assert(!!powerComp && powerComp.body.attrs.DeviceName === null
+      && powerComp.body.attrs.FootprintName === null,
+      'power symbol COMPONENT uses the power-flag attrs (DeviceName/FootprintName null)');
+    const gnet = powerPage.records.find(r => r.type === 'ATTR' && r.body.key === 'Global Net Name'
+      && powerComp && r.body.parentId === powerComp.head.id);
+    assert(!!gnet && gnet.body.value === 'GND',
+      'power symbol carries the Global Net Name ATTR',
+      gnet && gnet.body.value);
 
     // ---- pour fineness option ----
     const fineDst = path.join(tmp, 'conv-fine');
