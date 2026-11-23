@@ -24,7 +24,8 @@
  *     symbol→COMPONENT(+ATTR)
  *   PCB: segment→LINE (copper track), arc(track)→ARC, via→VIA, footprint→FOOTPRINT doc
  *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC, gr_rect/gr_poly/gr_circle/
- *     bezier→POLY, gr_text→STRING, zone→POUR+POURED (keepout→REGION),
+ *     bezier/gr_curve→POLY (sampled; the host outline decoder rejects 'C'),
+ *     gr_text→STRING, zone→POUR+POURED (keepout→REGION),
  *     dimension→DIMENSION, Edge.Cuts→POLY BOARD_OUTLINE
  * Not migrated: 3D models, net classes, SPICE models, custom rules; anything
  * unrecognized is skipped with a warning.
@@ -878,7 +879,7 @@ function convertPcb(srcFile, dst, pcb) {
       convertFootprint(node, {
         netNames, usedNets, usedFps, ensureFootprintDoc, nextTicket, push: pushComp, body: compBody
       });
-    } else if (head === 'gr_line' || head === 'gr_arc' || head === 'gr_rect' || head === 'gr_circle' || head === 'gr_poly' || head === 'bezier') {
+    } else if (head === 'gr_line' || head === 'gr_arc' || head === 'gr_rect' || head === 'gr_circle' || head === 'gr_poly' || head === 'bezier' || head === 'gr_curve') {
       const layerArr = findSub(node, 'layer');
       const lname = layerArr ? layerArr[0] : '';
       const isEdge = lname === 'Edge.Cuts';
@@ -942,15 +943,25 @@ function convertPcb(srcFile, dst, pcb) {
         const path = [...flat, flat[0], flat[1]];
         if (isEdge) outlinePaths.push(path);
         else push('POLY', { ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)), path, polyType: 'NORMAL' });
-      } else if (head === 'bezier') {
+      } else if (head === 'bezier' || head === 'gr_curve') {
+        // The host's POLY outline decoder only understands L/ARC/CARC and
+        // throws on 'C', so sample the cubic Bezier into line segments instead
+        // of emitting a 'C' path (a C-token POLY is silently dropped).
         const pts = extractPts(node);
         if (!pts || pts.length < 4) continue;
         const flat = [];
         for (const p of pts) flat.push(toMil(p.x), flipY(p.y));
-        push('POLY', {
-          ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)),
-          path: [flat[0], flat[1], 'C', ...flat.slice(2)], polyType: 'NORMAL'
-        });
+        const sampled = flattenCubicBezier(flat);
+        if (isEdge) {
+          for (let i = 0; i + 3 < sampled.length; i += 2) {
+            openSegments.push([sampled[i], sampled[i + 1], sampled[i + 2], sampled[i + 3]]);
+          }
+        } else {
+          push('POLY', {
+            ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)),
+            path: [sampled[0], sampled[1], 'L', ...sampled.slice(2)], polyType: 'NORMAL'
+          });
+        }
       }
     } else if (head === 'gr_text') {
       const val = typeof node[1]?.v === 'string' ? node[1].v : '';
@@ -1040,6 +1051,25 @@ function arcOutlinePath(s, m, e) {
   const x2 = toMil(e[0]), y2 = flipY(e[1]);
   const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
   return [x1, y1, 'ARC', r2(sweep), x2, y2, x1, y1];
+}
+
+// KiCad cubic Bezier (4 control points) → sampled open polyline in mil.
+// The client's POLY outline decoder rejects the 'C' path instruction, so the
+// curve must be flattened before it is written (a C-token POLY is silently
+// dropped). Segment count follows the control-polygon length (~10 mil each),
+// clamped so small and large curves stay both smooth and compact.
+function flattenCubicBezier(flat) {
+  if (flat.length !== 8) return flat.slice();
+  const [x0, y0, x1, y1, x2, y2, x3, y3] = flat;
+  const ctrlLen = Math.hypot(x1 - x0, y1 - y0) + Math.hypot(x2 - x1, y2 - y1) + Math.hypot(x3 - x2, y3 - y2);
+  const steps = Math.max(12, Math.min(64, Math.ceil(ctrlLen / 10)));
+  const out = [x0, y0];
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps, u = 1 - t;
+    const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+    out.push(a * x0 + b * x1 + c * x2 + d * x3, a * y0 + b * y1 + c * y2 + d * y3);
+  }
+  return out;
 }
 
 // gr_text → PCB STRING record body

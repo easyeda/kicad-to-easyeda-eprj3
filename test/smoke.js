@@ -100,6 +100,7 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
   (gr_circle (center 20 25) (end 22 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
   (gr_arc (start 30 25) (mid 32.5 22.5) (end 35 25) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
   (gr_poly (pts (xy 0 25) (xy 5 25) (xy 5 30)) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
+  (gr_curve (pts (xy 10 20) (xy 15 30) (xy 25 10) (xy 30 20)) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
   (gr_text "board" (at 10 35 0) (layer "F.SilkS") (effects (font (size 1.2 1.2) (thickness 0.2))))
   (dimension (type aligned) (layer "Cmts.User") (pts (xy 0 0) (xy 40 0)) (height 5)
     (gr_text "40 mm" (at 20 -2 0)) (style (thickness 0.2)))
@@ -299,6 +300,16 @@ function main() {
     assert(!!grCircle && grCircle.body.layerId === 3, 'gr_circle becomes a POLY with a CIRCLE path');
     const grPoly = pcbDoc.records.find(r => r.type === 'POLY' && r.body.polyType === 'NORMAL' && !Array.isArray(r.body.path[0]));
     assert(!!grPoly && grPoly.body.layerId === 3, 'gr_poly becomes a closed NORMAL POLY');
+    const grCurve = pcbDoc.records.find(r => r.type === 'POLY'
+      && Math.abs(r.body.path[0] - kicadToEprj3(10)) < 0.01
+      && Math.abs(r.body.path[1] + kicadToEprj3(20)) < 0.01);
+    assert(!!grCurve && grCurve.body.layerId === 3 && grCurve.body.path[2] === 'L'
+      && grCurve.body.path.filter(v => typeof v === 'string').every(v => v === 'L'),
+      'gr_curve is flattened to an L-only POLY (no C token)', grCurve && JSON.stringify(grCurve.body.path).slice(0, 120));
+    assert(!!grCurve && (grCurve.body.path.length - 1) / 2 >= 12,
+      'gr_curve keeps enough samples for a smooth curve');
+    assert(!pcbDoc.records.some(r => r.type === 'POLY' && Array.isArray(r.body.path) && r.body.path.includes('C')),
+      'no POLY path uses the client-rejected C token');
     const str = pcbDoc.records.find(r => r.type === 'STRING' && r.body.text === 'board');
     assert(!!str && str.body.layerId === 3, 'gr_text becomes a STRING record');
     const dim = pcbDoc.records.find(r => r.type === 'DIMENSION');
