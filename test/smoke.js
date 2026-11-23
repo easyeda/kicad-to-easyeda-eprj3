@@ -110,6 +110,7 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
     (property "Reference" "R1" (at 5 4 0) (layer "F.SilkS"))
     (pad "1" smd rect (at -0.75 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "GND"))
     (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
+    (fp_arc (start -1 -1) (mid 0 0) (end 1 -1) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
   )
 )`;
 
@@ -118,6 +119,7 @@ const kicadFpSample = `(footprint "R_0805" (layer "F.Cu")
   (attr smd)
   (fp_text reference "REF**" (at 0 -1.43 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
   (fp_line (start -1 -0.6) (end 1 -0.6) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
+  (fp_arc (start -1 -1) (mid 0 0) (end 1 -1) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask"))
   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "F.Cu" "F.Paste" "F.Mask"))
 )`;
@@ -246,6 +248,13 @@ function main() {
     const pcbDevDocs = pcbDocs.filter(d => d.head.body.docType === 'DEVICE');
     assert(fpDocs.length === 1 && pcbDevDocs.length === 1, '.epcb2 embeds FOOTPRINT and DEVICE docs');
     assert(convPcb.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
+    const fpDoc = fpDocs[0];
+    assert(!!fpDoc && !fpDoc.records.some(r => r.type === 'ARC'),
+      'FOOTPRINT doc emits no standalone ARC record (client drops components after it, issue #4)');
+    const fpArcPoly = fpDoc && fpDoc.records.find(r => r.type === 'POLY' && Array.isArray(r.body.path) && r.body.path.includes('ARC'));
+    assert(!!fpArcPoly && fpArcPoly.body.path[2] === 'ARC' && fpArcPoly.body.layerId === 3
+      && Math.abs(fpArcPoly.body.path[3]) > 0 && Math.abs(fpArcPoly.body.path[3]) < 360,
+      'fp_arc becomes a POLY with an ARC path and a valid sweep angle', fpArcPoly && JSON.stringify(fpArcPoly.body.path));
     const pcbComp = pcbDoc.records.find(r => r.type === 'COMPONENT');
     assert(pcbComp && pcbComp.body.layerId === 1, 'PCB COMPONENT placements reference a copper layer');
     const pcbDevName = pcbComp && JSON.parse(pcbComp.body.attrs.DeviceName);
@@ -348,6 +357,11 @@ function main() {
     assert(libFpDoc && libFpDoc.records.filter(r => r.type === 'LAYER').length === 19, 'footprint doc defines the 19-layer table');
     assert(libFpDoc && libFpDoc.records.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
     assert(libFpDoc && !libFpDoc.records.some(r => r.type === 'PART'), 'library footprint docs carry no PART record');
+    assert(libFpDoc && !libFpDoc.records.some(r => r.type === 'ARC'),
+      'library FOOTPRINT docs emit no standalone ARC record (issue #4)');
+    const libFpArc = libFpDoc && libFpDoc.records.find(r => r.type === 'POLY' && Array.isArray(r.body.path) && r.body.path.includes('ARC'));
+    assert(!!libFpArc && libFpArc.body.path[2] === 'ARC' && Math.abs(libFpArc.body.path[3]) < 360,
+      'library fp_arc becomes a POLY with an ARC path');
 
     // ---- parser (nested unit symbols) ----
     const { parseSymbolFile } = require(path.join(SCRIPTS, 'lib', 'kicad'));

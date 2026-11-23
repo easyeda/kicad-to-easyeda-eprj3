@@ -503,18 +503,34 @@ function buildFootprintRecords(kicadFp, opts = {}) {
         }
       });
     } else if (sh.kind === 'fp_arc' && sh.mx != null) {
-      // PCB ARC record: start/end + CCW-positive angle in eprj3 (Y-up) space.
+      // The desktop client rejects a standalone ARC record inside a FOOTPRINT
+      // document: the library doc fails to decode and the client silently drops
+      // that COMPONENT and every COMPONENT after it (issue #4). Emit the arc as
+      // a POLY with the host's ARC path instruction instead — POLY is accepted
+      // and renders the same geometry.
       const x1 = kicadToEprj3(sh.x1), y1 = flipY(sh.y1);
       const mx = kicadToEprj3(sh.mx), my = flipY(sh.my);
       const x2 = kicadToEprj3(sh.x2), y2 = flipY(sh.y2);
-      const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
+      const { cx, cy, sweep } = arcSweep(x1, y1, mx, my, x2, y2);
+      const angle = Math.round(sweep * 100) / 100;
+      let path;
+      if (Math.abs(angle) === 360) {
+        // TPCbArc.angle 0/±360 is rejected by the client's arcCheck. A closed
+        // arc with a usable circumcenter becomes a CIRCLE sub-path; a degenerate
+        // one (start == end) has no geometry to keep.
+        const r = Math.hypot(x1 - cx, y1 - cy);
+        if (!(r > 0.01) || (x1 === x2 && y1 === y2)) continue;
+        path = [['CIRCLE', cx, cy, r, 1]];
+      } else if (angle === 0) {
+        continue; // degenerate/collinear arc
+      } else {
+        path = [x1, y1, 'ARC', angle, x2, y2];
+      }
       records.push({
-        head: { type: 'ARC', ticket, id: 'e' + randId() },
+        head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
-          groupId: 0, netName: '', layerId,
-          startX: x1, startY: y1, endX: x2, endY: y2,
-          angle: Math.round(sweep * 100) / 100, width,
-          locked: false, zIndex: ticket
+          groupId: 0, netName: '', layerId, width, path,
+          locked: false, zIndex: ticket, polyType: 'NORMAL'
         }
       });
     }
