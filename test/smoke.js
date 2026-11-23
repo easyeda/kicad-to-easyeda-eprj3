@@ -554,6 +554,40 @@ function main() {
     const nattr = k => (netportAttrs.find(a => a.body.key === k) || {}).body?.value;
     assert(!!netportComp && nattr('Symbol') === netportDoc.head.body.uuid && nattr('Name') === 'A',
       'net port component links Symbol/Name to the child net');
+    // Multi-unit symbols must share one SYMBOL document with one PART per unit;
+    // separate documents per unit made the netlist drop the device.
+    const multiSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")
+  (lib_symbols
+    (symbol "mlib:U4" (property "Reference" "U")
+      (symbol "U4_1_1" (pin input line (at -2 0 0) (length 1) (name "A") (number "1")))
+      (symbol "U4_1_2" (pin input line (at -2 0 0) (length 1) (name "A") (number "1")))
+      (symbol "U4_2_1" (pin output line (at 2 0 0) (length 1) (name "Y") (number "2")))
+    )
+  )
+  (symbol (lib_id "mlib:U4") (at 20 20 0) (unit 1) (property "Reference" "U1") (property "Value" "74LS125"))
+  (symbol (lib_id "mlib:U4") (at 40 20 0) (unit 2) (property "Reference" "U1") (property "Value" "74LS125"))
+)`;
+    const multiDir = path.join(tmp, 'multi');
+    fs.mkdirSync(multiDir, { recursive: true });
+    fs.writeFileSync(path.join(multiDir, 'multi.kicad_sch'), multiSch);
+    const multiOut = path.join(tmp, 'multi-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', multiDir, multiOut, '--project-name', 'multi']);
+    const multiDocs = docSegments(readRecords(path.join(multiOut, 'sch', 'multi', 'multi.esch2')));
+    const symDocMeta = d => (d.records.find(r => r.type === 'META') || {}).body || {};
+    const multiSymDocs = multiDocs.filter(d => d.head.body.docType === 'SYMBOL' && symDocMeta(d).docType === 2);
+    const multiParts = multiSymDocs[0] ? multiSymDocs[0].records.filter(r => r.type === 'PART') : [];
+    assert(multiSymDocs.length === 1 && multiParts.length === 2,
+      'multi-unit symbol produces one SYMBOL doc with a PART per used unit',
+      `docs=${multiSymDocs.length} parts=${multiParts.length}`);
+    const multiPage = multiDocs[multiDocs.length - 1];
+    const multiCompPartIds = multiPage.records.filter(r => r.type === 'COMPONENT').map(r => r.body.partId);
+    assert(multiCompPartIds.includes('mlib:U4.1') && multiCompPartIds.includes('mlib:U4.2'),
+      'each unit component points at its own PART id', multiCompPartIds.join(','));
+    const multiDevices = multiDocs.filter(d => d.head.body.docType === 'DEVICE' && symDocMeta(d).title === 'mlib:U4');
+    assert(multiDevices.length === 1, 'units share one DEVICE document', `devices=${multiDevices.length}`);
+    const stylePins = multiSymDocs[0] ? multiSymDocs[0].records.filter(r => r.type === 'PIN').length : 0;
+    assert(stylePins === 2, 'De Morgan style-2 pins are not duplicated into the doc', `pins=${stylePins}`);
+
     // Wires that share an endpoint (or meet at a KiCad junction) form ONE
     // EasyEDA WIRE group: separate groups would read as isolated nets.
     const wireSch = `(kicad_sch (version 20230121) (generator eeschema) (paper "A4")

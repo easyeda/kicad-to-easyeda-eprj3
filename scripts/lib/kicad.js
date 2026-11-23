@@ -97,14 +97,15 @@ function nodeSymbol(node, unit = 1) {
       out.isPower = true;
     } else if (head === 'symbol') {
       // KiCad 6+ nests per-unit graphics in (symbol "NAME_<unit>_<style>").
-      // Unit 0 is shared by all units; style 2 is the De Morgan alternate
-      // representation and must NOT be merged with style 1 (doing so duplicated
-      // every pin and broke connectivity / DRC).
+      // Unit 0 is shared by all units; style 0 holds the shared pins, style 1
+      // the default graphics; style 2 is the De Morgan alternate and must NOT
+      // be merged with the default (that duplicated every pin and broke
+      // connectivity / DRC). Legacy libraries use only style 0.
       const subName = it[1]?.v || '';
       const m = /_(\d+)_(\d+)$/.exec(subName);
       if (m) {
         const u = parseInt(m[1], 10), style = parseInt(m[2], 10);
-        if (style !== 1) continue;
+        if (style > 1) continue;
         if (u !== 0 && u !== unit) continue;
       }
       const sub = nodeSymbol(it, unit);

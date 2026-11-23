@@ -278,45 +278,66 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   }
 
   const libDocs = [];
-  const usedSymbols = {};
+  const symbolDocs = new Map(); // libId -> one SYMBOL doc holding every used PART/unit
   const usedDevices = {};
   function ensureSymbolDoc(libId, footprintName, unit = 1) {
-    const symKey = libId + '\u0000' + unit;
-    let sym = usedSymbols[symKey];
-    if (!sym) {
-      const shortName = libId.split(':').pop();
-      const libNode = libNodes[libId] || libNodes[shortName];
-      const libSym = libNode ? nodeSymbol(libNode, unit) : null;
-      const name = (libSym && libSym.name) || shortName;
-      // Power/net-identifier symbols live in project libraries too; the
-      // (power) marker in the lib_symbols entry is authoritative, not the
-      // "power:" lib_id prefix.
-      const isPower = /^power:/i.test(libId) || !!(libSym && libSym.isPower);
-      const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
-      const symDocUuid = uuid(16);
-      const partId = isPower ? MAGIC_PART_ID : name + '.1';
-      const { records: symRecs, nameOff } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] }, {
+    const shortName = libId.split(':').pop();
+    const libNode = libNodes[libId] || libNodes[shortName];
+    const libSym = libNode ? nodeSymbol(libNode, unit) : null;
+    const name = (libSym && libSym.name) || shortName;
+    // Power/net-identifier symbols live in project libraries too; the
+    // (power) marker in the lib_symbols entry is authoritative, not the
+    // "power:" lib_id prefix.
+    const isPower = /^power:/i.test(libId) || !!(libSym && libSym.isPower);
+    const netName = isPower ? ((libSym && libSym.properties && libSym.properties.Value) || shortName) : null;
+
+    // Multi-unit symbols must live in ONE SYMBOL document with one PART per
+    // unit (EDA multi-part). Separate docs with the same partId made the
+    // netlist drop the device entirely.
+    let doc = symbolDocs.get(libId);
+    if (!doc) {
+      doc = {
+        uuid: uuid(16),
+        name, isPower, netName, nameOff: null,
+        records: [
+          docHead('SYMBOL', uuid(16)),
+          isPower
+            ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
+            : metaRec(name, { docType: 2 })
+        ],
+        parts: new Map()
+      };
+      // keep DOCHEAD uuid in sync with the doc uuid
+      doc.records[0].body.uuid = doc.uuid;
+      symbolDocs.set(libId, doc);
+      libDocs.push({ __symbolDoc: doc });
+    }
+    let partId = doc.parts.get(unit);
+    if (!partId) {
+      partId = isPower ? MAGIC_PART_ID : name + '.' + unit;
+      const { records, nameOff } = buildSymbolRecords(libSym || { name, pins: [], shapes: [] }, {
         partId,
         partTitle: isPower ? '' : partId,
         isPower,
         netName
       });
-      libDocs.push(
-        docHead('SYMBOL', symDocUuid),
-        isPower
-          ? { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: name, description: '', tags: ['特殊器件', '网络标识'], docType: 18, source: '' } }
-          : metaRec(name, { docType: 2 }),
-        ...symRecs
-      );
-      sym = { symDocUuid, partId, name, isPower, netName, nameOff };
-      usedSymbols[symKey] = sym;
+      // Extra units contribute only their PART block; CANVAS and the doc-level
+      // Device/Symbol attrs are written once.
+      const recs = doc.parts.size
+        ? records.filter(r => r.head.type !== 'CANVAS'
+            && !(r.head.type === 'ATTR' && r.body && r.body.parentId === ''))
+        : records;
+      doc.records.push(...recs);
+      doc.parts.set(unit, partId);
+      if (nameOff) doc.nameOff = nameOff;
     }
+    const sym = { symDocUuid: doc.uuid, partId, name, isPower, netName, nameOff: doc.nameOff };
 
     // One DEVICE per (symbol, footprint): the same KiCad symbol can be placed
     // with different Footprint properties (R1/R2), and each component must bind
-    // to a device whose FootprintName matches.
+    // to a device whose FootprintName matches. All units share the device.
     const fp = footprintName || '';
-    const devKey = symKey + '\u0000' + fp;
+    const devKey = libId + '\u0000' + fp;
     let dev = usedDevices[devKey];
     if (!dev) {
       const devUuid = uuid(16);
@@ -852,7 +873,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
 
   writeRecords(dst, [
     ...frame.symbol, ...frame.device,
-    ...libDocs, ...pageRecords
+    ...libDocs.flatMap(e => e && e.__symbolDoc ? e.__symbolDoc.records : [e]), ...pageRecords
   ]);
 }
 
