@@ -17,10 +17,12 @@
  *         (uuid == index' pcb uuid)
  *
  * Primitive coverage (per KiCad file-format docs → EasyEDA file-format docs):
- *   Schematic: wire→WIRE+LINE, bus→BUS+LINE, bus_entry→BUSENTRY, junction→CIRCLE,
- *     no_connect→LINE×2, label/global_label/hierarchical_label→NETLABEL,
+ *   Schematic: wire→WIRE+LINE, bus→BUS+LINE, bus_entry→BUSENTRY,
+ *     junction→wire split only (no dot), no_connect→LINE×2,
+ *     label→NET attr, global_label→net flag, hierarchical_label→net port,
  *     text/text_box→TEXT(+RECT), polyline/rectangle/circle/arc/bezier→POLY/RECT/
- *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→RECT+TEXT+NETLABEL,
+ *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→reuse block COMPONENT
+ *     (SYMBOL docType 17) linked to the child schematic,
  *     symbol→COMPONENT(+ATTR)
  *   PCB: segment→LINE (copper track), arc(track)→ARC, via→VIA, footprint→FOOTPRINT doc
  *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC (Edge.Cuts arcs are
@@ -811,14 +813,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         body: { order: ++busEntryOrder, pointX: x2, pointY: y2, rotation: rot, groupId: '', locked: false, zIndex: ticket }
       });
     } else if (head === 'junction') {
-      const [x, y] = findAtXY(node);
-      const dArr = findSub(node, 'diameter');
-      const d = dArr && parseFloat(dArr[0]) > 0 ? parseFloat(dArr[0]) : 1.016; // KiCad diameter 0 = auto (default mm)
-      rec('CIRCLE', {
-        partId: '', groupId: '', locked: false,
-        centerX: toSch(x), centerY: pageY(y), radius: toSch(d) / 2,
-        strokeColor: null, strokeStyle: 'SOLID', fillColor: '#000000', strokeWidth: null, fillStyle: 'SOLID'
-      });
+      // Junction dots are not drawn: a junction only means the wires meet
+      // there. emitAllWires() already splits the segments at this point and
+      // keeps every resulting LINE in the same WIRE group.
+      continue;
     } else if (head === 'no_connect') {
       const [x, y] = findAtXY(node);
       const cx = toSch(x), cy = pageY(y);

@@ -319,8 +319,11 @@ function main() {
     const busEntry = pageDoc.records.find(r => r.type === 'BUSENTRY');
     assert(!!busEntry && busEntry.body.rotation % 90 === 0, 'bus_entry becomes a BUSENTRY with 90° rotation');
     assert(pageDoc.records.some(r => r.type === 'BUS'), 'bus becomes a BUS record');
-    const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 'SOLID');
-    assert(!!junction && junction.body.radius > 0, 'junction becomes a filled CIRCLE dot');
+    // Junction dots are not emitted: the wires are split there and grouped.
+    assert(!pageDoc.records.some(r => r.type === 'CIRCLE' && r.body.fillStyle === 'SOLID'),
+      'junction dots are not converted to CIRCLE records');
+    assert(pageDoc.records.some(r => r.type === 'CIRCLE' && r.body.fillStyle !== 'SOLID'),
+      'schematic circle shapes are still converted');
     const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 1);
     assert(ncLines.length === 2 && ncLines[0].body.lineGroup && ncLines[0].body.lineGroup === ncLines[1].body.lineGroup,
       'no_connect becomes two LINE records sharing a group id');
