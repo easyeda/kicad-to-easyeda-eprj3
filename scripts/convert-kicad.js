@@ -527,12 +527,52 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     if (info.sheetName) pos('Sheetname', info.sheetName, leftX, topY - 2.8, 'LEFT_BOTTOM', true);
     if (info.sheetFile) pos('Sheetfile', info.sheetFile, leftX, bottomY + 2.3, 'LEFT_TOP', true);
   };
+  // PWR_FLAG is KiCad's ERC-only marker: it sits on an existing net but does
+  // not name it. EasyEDA's non-electrical symbol (SYMBOL docType 21, no PIN)
+  // keeps the KiCad glyph on the sheet without joining every flagged net.
+  const nonelecDocs = new Map();
+  function ensureNonelecDoc(kicadSym, displayName) {
+    let d = nonelecDocs.get(displayName);
+    if (d) return d;
+    const symUuid = uuid(16);
+    const devUuid = uuid(16);
+    const { records } = buildSymbolRecords(
+      { ...(kicadSym || {}), name: displayName, pins: [], shapes: (kicadSym && kicadSym.shapes) || [] },
+      { partId: MAGIC_PART_ID, partTitle: '', isPower: false }
+    );
+    libDocs.push(
+      docHead('SYMBOL', symUuid),
+      { head: { type: 'META', ticket: 1, id: 'META' }, body: {
+        title: displayName, description: '', tags: ['特殊器件', '无电气'], docType: 21, source: ''
+      } },
+      ...records,
+      docHead('DEVICE', devUuid),
+      metaRec(displayName, {
+        images: [],
+        attributes: {
+          Symbol: symUuid, Description: '', Name: displayName,
+          SymbolName: JSON.stringify({ name: displayName, uuid: symUuid, source: '' }),
+          'Add into BOM': 'no'
+        }
+      })
+    );
+    d = { symUuid, devUuid, displayName };
+    nonelecDocs.set(displayName, d);
+    return d;
+  }
   // EasyEDA does not join two pins that merely sit on the same point (KiCad
   // does); a wire touching that point connects them. KiCad power symbols are
-  // placed directly on pins, so give every power flag / net port a 1-unit stub.
+  // placed directly on pins, so give every power flag / net port a stub when
+  // no wire already reaches the point. The stub spans one 50-mil grid step so
+  // its free end stays on the grid the rest of the drawing uses (a 10-mil tail
+  // looked like an off-grid pin end and made users re-route by hand).
   const stubGroups = new Map();
-  const emitPinStub = (cx, cy) => {
-    const key = cx.toFixed(4) + ',' + cy.toFixed(4);
+  const stubStarts = new Set();
+  const emitPinStub = (cx, cy, endX, endY) => {
+    const ex = endX == null ? cx : endX;
+    const ey = endY == null ? cy + 5 : endY;
+    const key = cx.toFixed(4) + ',' + cy.toFixed(4) + '->' + ex.toFixed(4) + ',' + ey.toFixed(4);
+    stubStarts.add(cx.toFixed(4) + ',' + cy.toFixed(4));
     if (stubGroups.has(key)) return stubGroups.get(key);
     const groupId = randId();
     ticket++;
@@ -542,7 +582,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       head: { type: 'LINE', ticket, id: randId() },
       body: {
         fillColor: null, fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null,
-        startX: cx, startY: cy, endX: cx, endY: cy + 1, lineGroup: groupId
+        startX: cx, startY: cy, endX: ex, endY: ey, lineGroup: groupId
       }
     });
     stubGroups.set(key, groupId);
@@ -647,9 +687,25 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const h = node[0] && node[0].v;
       // Labels often sit mid-wire; the wire is split there so the label/net
       // port pin lands on a wire endpoint (EasyEDA only joins at endpoints).
-      if (!['junction', 'label', 'global_label', 'hierarchical_label'].includes(h)) continue;
-      const at = findSub(node, 'at');
-      if (at) junctions.push([parseFloat(at[0]), parseFloat(at[1])]);
+      if (['junction', 'label', 'global_label', 'hierarchical_label'].includes(h)) {
+        const at = findSub(node, 'at');
+        if (at) junctions.push([parseFloat(at[0]), parseFloat(at[1])]);
+        continue;
+      }
+      // Power symbols attach anywhere on a wire in KiCad; split there as well
+      // so the net-flag pin and the wire share an endpoint (no extra stub).
+      if (h !== 'symbol') continue;
+      const libId = findChildValue(node, 'lib_id');
+      if (!libId) continue;
+      const libNode = findLibNode(libId);
+      const unitArr = findSub(node, 'unit');
+      const unit = unitArr ? (parseInt(unitArr[0], 10) || 1) : 1;
+      const libSym = libNode ? nodeSymbol(libNode, unit) : null;
+      const ref = collectProperties(node).Reference || '';
+      const isPowerSym = /^power:/i.test(libId) || !!(libSym && libSym.isPower) || /^#/.test(ref);
+      if (!isPowerSym) continue;
+      const pin = (libSym && libSym.pins || [])[0];
+      if (pin) junctions.push(pinWorldAt(node, pin, findFlags(node, 'mirror'), findAtXY(node)[2]));
     }
     const segs = [];
     for (const s of raw) {
@@ -789,7 +845,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       pageRecords.push(pageAttr(portGroup, ++ticket, 'NET', name, cx, cy, 'CENTER_TOP', { valueVisible: false }));
     }
     // A hier label may attach directly to a pin in KiCad; EasyEDA needs a wire.
-    emitPinStub(cx, cy);
+    // When it already sits on a wire, the wire is the connection — a second
+    // stub at that point would add a junction.
+    if (!portGroup) emitPinStub(cx, cy);
   };
 
 
@@ -868,8 +926,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const labelGroup = wireGroupAt(x, y);
       if (labelGroup) {
         pageRecords.push(pageAttr(labelGroup, ++ticket, 'NET', val, X, Y, 'CENTER_TOP', { valueVisible: false }));
+      } else {
+        emitPinStub(X, Y);
       }
-      emitPinStub(X, Y);
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
       const val = findValue(node);
@@ -984,9 +1043,39 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const libNode = findLibNode(libId);
       const probeSym = libNode ? nodeSymbol(libNode, unit) : null;
       const powerish = /^power:/i.test(libId) || !!(probeSym && probeSym.isPower);
-      const flagName = (probeSym && probeSym.name) || shortLib;
+      const flagName = (((probeSym && probeSym.name) || shortLib) + '').split(':').pop();
       if (powerish && /PWR_FLAG/i.test(flagName)) {
-        warn(`schematic: ERC flag ${ref || flagName} skipped (not a net identifier)`);
+        // Non-electrical marker: keep the KiCad glyph (no PIN, no Global Net
+        // Name, no stub), so it neither renames nor joins the net it sits on.
+        const d = ensureNonelecDoc(probeSym, flagName || 'PWR_FLAG');
+        const [fx, fy, frot] = findAtXY(node);
+        const fmirrors = findFlags(node, 'mirror');
+        let fRotation = (((frot || 0) % 360) + 360) % 360;
+        let fMirror = fmirrors.includes('y');
+        if (fmirrors.includes('x')) { fMirror = true; fRotation = (fRotation + 180) % 360; }
+        const fxSch = toSch(fx), fySch = pageY(fy);
+        const compId = randId();
+        ticket++;
+        pageRecords.push({
+          head: { type: 'COMPONENT', ticket, id: compId },
+          body: {
+            partId: MAGIC_PART_ID, x: fxSch, y: fySch, rotation: fRotation, isMirror: fMirror,
+            attrs: { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null },
+            zIndex: ++componentZ
+          }
+        });
+        const nvis = { fontSize: null, keyVisible: null, valueVisible: null };
+        pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', d.symUuid, fxSch, fySch + 30, null, nvis));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', d.devUuid));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
+        // KiCad draws the Value text beside the flag; show the same text.
+        let nameX = fxSch, nameY = fySch - 20;
+        for (const it of node.slice(1)) {
+          if (!(Array.isArray(it) && it[0].v === 'property' && it[1] && it[1].v === 'Value')) continue;
+          const vat = findSub(it, 'at');
+          if (vat && vat.length >= 2) { nameX = toSch(parseFloat(vat[0])); nameY = pageY(parseFloat(vat[1])); }
+        }
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || 'PWR_FLAG', nameX, nameY, 'CENTER_MIDDLE', { valueVisible: true }));
         continue;
       }
       // A '#' reference marks a KiCad power/net symbol even when its library
@@ -1007,6 +1096,29 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       if (mirrors.includes('x')) { isMirror = true; rotation = (rotation + 180) % 360; }
       const compId = randId();
       const compX = toSch(x), compY = pageY(y);
+      // Power symbols often land exactly on a component pin with no wire. The
+      // pin-to-pin point alone is not a connection in EasyEDA, and adding a
+      // stub ending on that same point makes three ends meet (component pin +
+      // power pin + wire end) which the client draws as a correction junction.
+      // Place the symbol one grid step past the pin, in the direction its
+      // glyph points, and link the two with a short wire: two ends on each
+      // side, no junction, still connected.
+      const powerGroup = lib.isPower ? wireGroupAt(x, y) : null;
+      const powerOnPin = lib.isPower && !powerGroup;
+      let placeX = compX, placeY = compY;
+      if (powerOnPin) {
+        // Direction of the glyph in symbol-local screen space, rotated by the
+        // instance angle and mirrored like the component itself.
+        const ox = lib.nameOff && isFinite(lib.nameOff.x) ? lib.nameOff.x : 0;
+        const oy = lib.nameOff && isFinite(lib.nameOff.y) ? lib.nameOff.y : 10;
+        const a = rotation * Math.PI / 180;
+        let rx = ox * Math.cos(a) + oy * Math.sin(a);
+        const ry = -ox * Math.sin(a) + oy * Math.cos(a);
+        if (isMirror) rx = -rx;
+        const len = Math.hypot(rx, ry) || 1;
+        placeX = compX + (rx / len) * 5;
+        placeY = compY + (ry / len) * 5;
+      }
       // KiCad property positions are absolute page coords — reuse them so
       // Designator/Name land exactly where KiCad drew them (user issue: big ICs
       // overlapped a fixed +10/+10 offset).
@@ -1028,7 +1140,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         head: { type: 'COMPONENT', ticket, id: compId },
         body: {
           partId: lib.partId,
-          x: compX, y: compY, rotation, isMirror,
+          x: placeX, y: placeY, rotation, isMirror,
           attrs: lib.isPower
             ? { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }
             : {
@@ -1048,20 +1160,23 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         // Official exports leave kv/vv null here; visibility comes from the
         // symbol doc's own Name attr.
         const powerVis = { fontSize: null, keyVisible: null, valueVisible: null };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', lib.symDocUuid, compX, compY + 30, null, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', lib.symDocUuid, placeX, placeY + 30, null, powerVis));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
-        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, placeX + off.x, placeY + off.y, off.align, powerVis));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, placeX + off.x, placeY + off.y, off.align, powerVis));
         // The power symbol may sit mid-wire; the stub is its own WIRE group and
         // would leave the touched wire unnamed/isolated. Name that group too.
-        const powerGroup = wireGroupAt(x, y);
         if (powerGroup) {
           pageRecords.push(pageAttr(powerGroup, ++ticket, 'NET', lib.netName || value || lib.name, compX, compY, 'CENTER_TOP', { valueVisible: false }));
+          // A wire already reaches the pin: no stub. A second WIRE group on the
+          // same point adds a junction dot and an off-grid tail (user report:
+          // converted GND showed a junction where the wire meets the pin).
+        } else if (powerOnPin) {
+          // Link the component pin to the symbol that was moved past it.
+          emitPinStub(compX, compY, placeX, placeY);
         }
-        // Connect the power pin to whatever it sits on (KiCad pin-on-pin).
-        emitPinStub(compX, compY);
       } else {
         // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
         // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
@@ -1098,6 +1213,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   }
   for (const [k, count] of pinHit) {
     if (count < 2) continue;
+    // A power flag already moved past this point left its own connecting wire.
+    if (stubStarts.has(k)) continue;
     const [x, y] = k.split(',').map(Number);
     if (wireGroupAt(x, y)) continue;
     emitPinStub(toSch(x), pageY(y));

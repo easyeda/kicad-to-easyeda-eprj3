@@ -810,11 +810,26 @@ function main() {
       gnet && gnet.body.value);
     const powerComps = powerPage.records.filter(r => r.type === 'COMPONENT' && r.body.partId === 'pid8a0e77bacb214e'
       && r.body.zIndex !== null);
-    assert(powerComps.length === 1,
-      'PWR_FLAG ERC markers are skipped (only the GND power flag remains)',
+    assert(powerComps.length === 2,
+      'PWR_FLAG keeps its KiCad glyph as a second marker component',
       `comps=${powerComps.length}`);
-    assert(!powerEsch.some(r => r.type === 'ATTR' && r.body && r.body.value === 'PWR_FLAG'),
-      'no PWR_FLAG net identifier is emitted (would short every flagged net)');
+    // PWR_FLAG is ERC-only: it must become a non-electrical symbol (docType 21,
+    // no PIN) and must not carry a net name that would merge flagged nets.
+    const flagDoc = powerDocs.find(d => d.head && d.head.body
+      && (d.records.find(r => r.type === 'META') || {}).body?.docType === 21);
+    assert(!!flagDoc && (flagDoc.records.find(r => r.type === 'META') || {}).body.title === 'PWR_FLAG',
+      'PWR_FLAG becomes a docType-21 non-electrical SYMBOL doc');
+    assert(!!flagDoc && flagDoc.records.some(r => r.type === 'POLY')
+      && !flagDoc.records.some(r => r.type === 'PIN'),
+      'the non-electrical PWR_FLAG keeps the lib glyph and has no PIN');
+    const flagUuid = flagDoc && flagDoc.head.body.uuid;
+    const flagComp = powerComps.find(c => powerPage.records.some(a => a.type === 'ATTR'
+      && a.body.parentId === c.head.id && a.body.key === 'Symbol' && a.body.value === flagUuid));
+    const flagAttrs = flagComp
+      ? powerPage.records.filter(a => a.type === 'ATTR' && a.body.parentId === flagComp.head.id) : [];
+    assert(!!flagComp && flagAttrs.some(a => a.body.key === 'Name' && a.body.value === 'PWR_FLAG')
+      && !flagAttrs.some(a => a.body.key === 'Global Net Name'),
+      'PWR_FLAG component shows its value but has no net name (cannot short nets)');
 
     // Old project libraries often lost the (power) marker; a '#' reference
     // still marks a power symbol (hidden power pin = global net).
@@ -929,7 +944,7 @@ function main() {
     const touchX = 22.54 / 0.254, touchY = 20 / 0.254 - 825;
     const stub = touchPage.records.find(r => r.type === 'LINE'
       && Math.abs(r.body.startX - touchX) < 0.001 && Math.abs(r.body.startY - touchY) < 0.001
-      && Math.abs(r.body.endY - (touchY + 1)) < 0.001);
+      && Math.abs(r.body.endY - (touchY + 5)) < 0.001);
     assert(!!stub, 'coincident component pins get a connecting stub wire', JSON.stringify(stub && stub.body));
 
     // ---- pour fineness option ----
