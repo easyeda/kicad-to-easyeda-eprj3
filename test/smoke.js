@@ -799,6 +799,10 @@ function main() {
     assert(!!powerSymDoc && !!powerPart && powerPart.head.id === 'pid8a0e77bacb214e',
       'project-library power symbol embeds a docType-18 SYMBOL doc with the built-in power partId',
       JSON.stringify(powerPart && powerPart.head.id));
+    const powerPin = powerSymDoc && powerSymDoc.records.find(r => r.type === 'PIN');
+    assert(!!powerPin && powerPin.body.length === 0,
+      'power symbols keep KiCad pin length 0 (no synthetic pin line through the GND glyph)',
+      JSON.stringify(powerPin && powerPin.body.length));
     const powerComp = powerPage.records.find(r => r.type === 'COMPONENT' && r.body.partId === 'pid8a0e77bacb214e');
     assert(!!powerComp && powerComp.body.attrs.DeviceName === null
       && powerComp.body.attrs.FootprintName === null,

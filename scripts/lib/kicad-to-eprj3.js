@@ -268,10 +268,11 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     const pinId = 'e' + randId();
     ticket++;
     const rotation = ((pin.rotation || 0) % 360 + 360) % 360;
-    // Power flags carry length 0 in KiCad (wire meets the graphics at the pin
-    // origin); stretch the pin to the farthest graphic so the wire lands on it.
-    const graphicExtent = opts.isPower ? pinGraphicExtent(kicadSym, pin) : 0;
-    const length = pin.length > 0 ? schX(pin.length) : (graphicExtent > 0 ? graphicExtent : schX(2.54));
+    // Keep KiCad's pin length. Power symbols (GND and friends) use length 0
+    // with the stem drawn inside the glyph; stretching the pin to the glyph
+    // extent draws an extra line through the symbol and makes it look
+    // different from KiCad (user report: converted GND style/size mismatch).
+    const length = pin.length > 0 ? schX(pin.length) : 0;
     const pinName = pin.name && pin.name !== '~' ? pin.name : (opts.isPower ? 'Pin' + (pin.number || '1') : '');
     records.push({
       head: { type: 'PIN', ticket, id: pinId },
