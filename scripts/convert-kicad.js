@@ -560,6 +560,53 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     nonelecDocs.set(displayName, d);
     return d;
   }
+  // KiCad instance property (field) metadata. EDA ATTRs need the absolute
+  // anchor position plus text angle and effects (size/justify/hide/bold/
+  // italic); ignoring justify/hide/rotation/size put converted designators and
+  // values at the wrong anchor, in the wrong orientation, or visible when the
+  // original hid them.
+  const readPropMeta = node => {
+    const out = {};
+    for (const it of node.slice(1)) {
+      if (!(Array.isArray(it) && it[0].v === 'property')) continue;
+      const name = it[1] && it[1].v;
+      if (!name) continue;
+      const meta = {
+        value: it[2] ? it[2].v : '', x: null, y: null, rot: 0, size: null,
+        align: null, bold: null, italic: null, hide: false
+      };
+      const at = findSub(it, 'at');
+      if (at && at.length >= 2 && /^[\d.-]+$/.test(String(at[0])) && /^[\d.-]+$/.test(String(at[1]))) {
+        meta.x = toSch(at[0]);
+        meta.y = pageY(at[1]);
+        const a = at[2] != null ? parseFloat(at[2]) : 0;
+        if (isFinite(a)) meta.rot = ((a % 360) + 360) % 360;
+      }
+      const eff = findSubNode(it, 'effects');
+      if (eff) {
+        const font = findSubNode(eff, 'font');
+        if (font) {
+          const sz = findSub(font, 'size');
+          if (sz) meta.size = Math.max(1, Math.round(toSch(sz[0]) * 100) / 100);
+          const flag = key => findFlags(font, key).includes('yes')
+            || font.slice(1).some(x => x && !Array.isArray(x) && x.v === key);
+          if (flag('bold')) meta.bold = true;
+          if (flag('italic')) meta.italic = true;
+        }
+        const justify = findSub(eff, 'justify');
+        if (justify) {
+          const h = justify.includes('left') ? 'LEFT' : justify.includes('right') ? 'RIGHT' : 'CENTER';
+          const v = justify.includes('top') ? 'TOP' : justify.includes('bottom') ? 'BOTTOM' : 'MIDDLE';
+          meta.align = `${h}_${v}`;
+        }
+        if (findFlags(eff, 'hide').includes('yes')
+          || eff.slice(1).some(x => x && !Array.isArray(x) && x.v === 'hide')) meta.hide = true;
+      }
+      out[name] = meta;
+    }
+    return out;
+  };
+
   // EasyEDA does not join two pins that merely sit on the same point (KiCad
   // does); a wire touching that point connects them. KiCad power symbols are
   // placed directly on pins, so give every power flag / net port a stub when
@@ -1036,6 +1083,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const unitArr = findSub(node, 'unit');
       const unit = (inst && inst.unit) || (legacy && legacy.unit) || (unitArr ? parseInt(unitArr[0], 10) || 1 : 1);
       const ref = (inst && inst.reference) || (legacy && legacy.reference) || props.Reference || '';
+      const propMeta = readPropMeta(node);
+      const refMeta = propMeta.Reference || {};
+      const valMeta = propMeta.Value || {};
       // PWR_FLAG is KiCad's ERC-only marker: it attaches to an existing net but
       // does not name one. Converting it as an EDA power flag (Name=PWR_FLAG)
       // ties together every net that carries a flag (GND/VCC/VPP short).
@@ -1068,14 +1118,16 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', d.symUuid, fxSch, fySch + 30, null, nvis));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', d.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
-        // KiCad draws the Value text beside the flag; show the same text.
-        let nameX = fxSch, nameY = fySch - 20;
-        for (const it of node.slice(1)) {
-          if (!(Array.isArray(it) && it[0].v === 'property' && it[1] && it[1].v === 'Value')) continue;
-          const vat = findSub(it, 'at');
-          if (vat && vat.length >= 2) { nameX = toSch(parseFloat(vat[0])); nameY = pageY(parseFloat(vat[1])); }
-        }
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || 'PWR_FLAG', nameX, nameY, 'CENTER_MIDDLE', { valueVisible: true }));
+        // KiCad draws the Value text beside the flag; show the same text with
+        // the original anchor, angle, size and visibility.
+        const nameX = valMeta.x != null ? valMeta.x : fxSch;
+        const nameY = valMeta.y != null ? valMeta.y : fySch - 20;
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || 'PWR_FLAG', nameX, nameY,
+          valMeta.align || 'CENTER_MIDDLE', {
+            fontSize: valMeta.size, rotation: valMeta.rot || 0,
+            fontWeight: valMeta.bold ? true : null, italic: valMeta.italic ? true : null,
+            valueVisible: !valMeta.hide
+          }));
         continue;
       }
       // A '#' reference marks a KiCad power/net symbol even when its library
@@ -1119,17 +1171,6 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         placeX = compX + (rx / len) * 5;
         placeY = compY + (ry / len) * 5;
       }
-      // KiCad property positions are absolute page coords — reuse them so
-      // Designator/Name land exactly where KiCad drew them (user issue: big ICs
-      // overlapped a fixed +10/+10 offset).
-      const propPos = {};
-      for (const it of node.slice(1)) {
-        if (!(Array.isArray(it) && it[0].v === 'property')) continue;
-        const at = findSub(it, 'at');
-        if (at && at.length >= 2 && /^[\d.-]+$/.test(String(at[0])) && /^[\d.-]+$/.test(String(at[1]))) {
-          propPos[it[1]?.v] = [toSch(at[0]), pageY(at[1])];
-        }
-      }
       ticket++;
       // KiCad's Footprint property is the package name for this instance.
       // eprj3 stores it in attrs.FootprintName as a JSON string ({uuid,name,
@@ -1163,9 +1204,29 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', lib.symDocUuid, placeX, placeY + 30, null, powerVis));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
+        // Field placement comes from the KiCad Value property (anchor, angle,
+        // size, justification, visibility); fall back to the symbol-doc offset
+        // when the instance has no usable property.
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, placeX + off.x, placeY + off.y, off.align, powerVis));
-        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, placeX + off.x, placeY + off.y, off.align, powerVis));
+        const dOffX = placeX - compX, dOffY = placeY - compY;
+        const field = valMeta.x != null
+          ? {
+              x: valMeta.x + dOffX, y: valMeta.y + dOffY, rot: valMeta.rot || 0,
+              align: valMeta.align || off.align, size: valMeta.size,
+              visible: !valMeta.hide, bold: valMeta.bold, italic: valMeta.italic
+            }
+          : {
+              x: compX + off.x + dOffX, y: compY + off.y + dOffY, rot: 0,
+              align: off.align, size: null, visible: true, bold: null, italic: null
+            };
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || value || lib.name, field.x, field.y, field.align, {
+          fontSize: field.size, rotation: field.rot,
+          fontWeight: field.bold ? true : null, italic: field.italic ? true : null,
+          valueVisible: field.visible
+        }));
+        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || value || lib.name, field.x, field.y, field.align, {
+          fontSize: field.size, rotation: field.rot, valueVisible: false
+        }));
         // The power symbol may sit mid-wire; the stub is its own WIRE group and
         // would leave the touched wire unnamed/isolated. Name that group too.
         if (powerGroup) {
@@ -1184,13 +1245,22 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Unique ID', ref || 'gge' + (++ggeCounter)));
-        // Designator/Name at the KiCad property positions when present,
-        // otherwise just right of the origin like official exports.
-        const [dsgX, dsgY] = propPos.Reference || [compX + 10, compY];
-        const [valX, valY] = propPos.Value || [compX + 10, compY + 10];
-        if (ref) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', ref, dsgX, dsgY, null, { fontSize: null }));
+        // Designator/Name use the KiCad field anchor, text angle, font size,
+        // justification and visibility; only missing properties fall back to
+        // the official export's +10/+10 offset.
+        const fieldAttr = (key, text, meta, fbX, fbY) => {
+          const fx = meta.x != null ? meta.x : fbX;
+          const fy = meta.y != null ? meta.y : fbY;
+          pageRecords.push(pageAttr(compId, ++ticket, key, text, fx, fy,
+            meta.align || 'CENTER_MIDDLE', {
+              fontSize: meta.size, rotation: meta.rot || 0,
+              fontWeight: meta.bold ? true : null, italic: meta.italic ? true : null,
+              valueVisible: !meta.hide
+            }));
+        };
+        if (ref) fieldAttr('Designator', ref, refMeta, compX + 10, compY);
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', ''));
-        if (value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', value, valX, valY, null, { fontSize: null }));
+        if (value) fieldAttr('Name', value, valMeta, compX + 10, compY + 10);
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));

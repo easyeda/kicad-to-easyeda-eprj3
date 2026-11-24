@@ -88,8 +88,8 @@ const kicadSchSample = `(kicad_sch (version 20230121) (generator eeschema)
   (circle (center 65 15) (radius 2) (stroke (width 0.25) (type solid)) (fill none))
   (arc (start 70 10) (mid 72.5 12.5) (end 75 10) (stroke (width 0.25) (type solid)) (fill none))
   (symbol (lib_id "Device:R") (at 30 50 0) (unit 1)
-    (property "Reference" "R1" (at 30 48 0) (effects (font (size 1.27 1.27))))
-    (property "Value" "10k" (at 30 52 0) (effects (font (size 1.27 1.27))))
+    (property "Reference" "R1" (at 30 48 90) (effects (font (size 1.524 1.524) (bold yes)) (justify left bottom)))
+    (property "Value" "10k" (at 30 52 0) (effects (font (size 1.27 1.27)) (justify right) (hide yes)))
     (property "Footprint" "Package:R_0805" (at 30 50 0) (effects (font (size 1.27 1.27))))
   )
 )`;
@@ -260,6 +260,14 @@ function main() {
     const nameAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.parentId === comp.head.id);
     assert(nameAttr && Math.abs(nameAttr.body.y - (kicadToSchUnit(52) - 825)) < 0.01,
       'Name ATTR sits at the KiCad Value property position');
+    assert(!!compAttr && compAttr.body.rotation === 90 && Math.abs(compAttr.body.fontSize - 6) < 0.01
+      && compAttr.body.align === 'LEFT_BOTTOM' && compAttr.body.valueVisible === true
+      && compAttr.body.fontWeight === true,
+      'Designator ATTR keeps KiCad text angle/size/justify/bold',
+      JSON.stringify(compAttr && compAttr.body));
+    assert(!!nameAttr && nameAttr.body.valueVisible === false && nameAttr.body.align === 'RIGHT_MIDDLE',
+      'Name ATTR mirrors KiCad field visibility and justification',
+      JSON.stringify(nameAttr && nameAttr.body));
 
     // ---- pcb side ----
     const convPcb = readRecords(path.join(dst, 'pcb', 'PCB1.epcb2'));
