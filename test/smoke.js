@@ -260,13 +260,14 @@ function main() {
     const nameAttr = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.parentId === comp.head.id);
     assert(nameAttr && Math.abs(nameAttr.body.y - (kicadToSchUnit(52) - 825)) < 0.01,
       'Name ATTR sits at the KiCad Value property position');
-    assert(!!compAttr && compAttr.body.rotation === 90 && Math.abs(compAttr.body.fontSize - 6) < 0.01
+    assert(!!compAttr && compAttr.body.rotation === 90 && Math.abs(compAttr.body.fontSize - 9.6) < 0.01
       && compAttr.body.align === 'LEFT_BOTTOM' && compAttr.body.valueVisible === true
       && compAttr.body.fontWeight === true,
-      'Designator ATTR keeps KiCad text angle/size/justify/bold',
+      'Designator ATTR keeps KiCad text angle/justify/bold and scales 1.524mm to 9.6 units',
       JSON.stringify(compAttr && compAttr.body));
-    assert(!!nameAttr && nameAttr.body.valueVisible === false && nameAttr.body.align === 'RIGHT_MIDDLE',
-      'Name ATTR mirrors KiCad field visibility and justification',
+    assert(!!nameAttr && nameAttr.body.valueVisible === false && nameAttr.body.align === 'RIGHT_MIDDLE'
+      && nameAttr.body.fontSize === null,
+      'Name ATTR mirrors KiCad visibility/justification; default 50mil maps to the EDA default',
       JSON.stringify(nameAttr && nameAttr.body));
 
     // ---- pcb side ----

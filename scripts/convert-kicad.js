@@ -607,6 +607,18 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     return out;
   };
 
+  // EDA's default schematic field text is 80 mil while KiCad's is 50 mil
+  // (1.27 mm). Keep the client default for KiCad's default size and scale any
+  // custom size by the same ratio — copying KiCad's 50 mil verbatim makes
+  // designators/values look smaller than a normal EDA schematic (user report).
+  const EDA_FIELD_FONT = 8;   // 0.08 inch = 80 mil
+  const KICAD_FIELD_FONT = 5; // 1.27 mm = 50 mil, in 0.01-inch units
+  const fieldFontSize = size => {
+    if (size == null) return null; // let the client use its default
+    if (Math.abs(size - KICAD_FIELD_FONT) < 0.01) return null;
+    return Math.round(size * (EDA_FIELD_FONT / KICAD_FIELD_FONT) * 100) / 100;
+  };
+
   // EasyEDA does not join two pins that merely sit on the same point (KiCad
   // does); a wire touching that point connects them. KiCad power symbols are
   // placed directly on pins, so give every power flag / net port a stub when
@@ -1124,7 +1136,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         const nameY = valMeta.y != null ? valMeta.y : fySch - 20;
         pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || 'PWR_FLAG', nameX, nameY,
           valMeta.align || 'CENTER_MIDDLE', {
-            fontSize: valMeta.size, rotation: valMeta.rot || 0,
+            fontSize: fieldFontSize(valMeta.size), rotation: valMeta.rot || 0,
             fontWeight: valMeta.bold ? true : null, italic: valMeta.italic ? true : null,
             valueVisible: !valMeta.hide
           }));
@@ -1212,7 +1224,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         const field = valMeta.x != null
           ? {
               x: valMeta.x + dOffX, y: valMeta.y + dOffY, rot: valMeta.rot || 0,
-              align: valMeta.align || off.align, size: valMeta.size,
+              align: valMeta.align || off.align, size: fieldFontSize(valMeta.size),
               visible: !valMeta.hide, bold: valMeta.bold, italic: valMeta.italic
             }
           : {
@@ -1253,7 +1265,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
           const fy = meta.y != null ? meta.y : fbY;
           pageRecords.push(pageAttr(compId, ++ticket, key, text, fx, fy,
             meta.align || 'CENTER_MIDDLE', {
-              fontSize: meta.size, rotation: meta.rot || 0,
+              fontSize: fieldFontSize(meta.size), rotation: meta.rot || 0,
               fontWeight: meta.bold ? true : null, italic: meta.italic ? true : null,
               valueVisible: !meta.hide
             }));
