@@ -94,13 +94,14 @@ Output strictly follows the official format documentation from [easyeda-pro-form
 | `symbol` instances (with `property`, `mirror`) | `COMPONENT` (`partId` → embedded `PART`, `DeviceName` → `DEVICE`, mirror/rotation converted) + `Designator`/`Value` `ATTR` |
 | `wire` | `WIRE` + multiple `LINE` records sharing a `lineGroup` |
 | `bus` / `bus_entry` | `BUS` + `LINE` / `BUSENTRY` |
-| `junction` | Filled `CIRCLE` (electrical dot) |
+| `junction` | Wire split/grouping point only (same `lineGroup`); no dot is drawn |
 | `no_connect` | Two `LINE` records (X marker) |
-| `label` / `global_label` / `hierarchical_label` | `NETLABEL` |
+| `label` / `global_label` / `hierarchical_label` | `NET` attr on the wire group / net flag / net port |
 | `text` / `text_box` | `TEXT` (+ `RECT` border) |
 | `polyline` / `rectangle` / `circle` / `arc` / `bezier` | `POLY` / `RECT` / `CIRCLE` / `ARC` (center from three points) / `BEZIER`, with stroke/fill styles mapped |
 | `image` | `OBJ` (base64-embedded) |
-| `sheet` (hierarchy) | `RECT` + name `TEXT` + per-pin `NETLABEL` |
+| `sheet` (hierarchy) | Reuse block symbol (`SYMBOL` docType 17) + `COMPONENT`, linked to its own child schematic (CBB instances) |
+| `power` symbol / `PWR_FLAG` | Net flag (docType 18) / non-electrical symbol (docType 21, no `PIN`, keeps the KiCad glyph) |
 | Pin electrical/graphic types | Numeric `PIN.electric` / `PIN.pinShape` mapping |
 | `footprint` (with `pad`) | Embedded `FOOTPRINT` doc segments (`PART`/`PAD`/silkscreen graphics) + `DEVICE` doc segments + `COMPONENT` placements + `Designator`/`Footprint`/`Device` `ATTR` in `.epcb2` |
 | pad nets / oval drills | `PAD_NET` (component-pad binding) + `NET` index records / `holeType ROUND` width×height |

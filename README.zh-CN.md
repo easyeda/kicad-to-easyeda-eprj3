@@ -94,13 +94,14 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | `symbol` 实例（含 `property`、`mirror`） | `COMPONENT`（`partId` 指向内嵌 `PART`，`DeviceName` 指向 `DEVICE`，镜像/旋转已换算）+ `Designator`/`Value` `ATTR` |
 | `wire` | `WIRE` + 多条共享 `lineGroup` 的 `LINE` |
 | `bus` / `bus_entry` | `BUS` + `LINE` / `BUSENTRY` |
-| `junction` | 填充 `CIRCLE`（电气节点） |
+| `junction` | 仅作为导线切分/分组依据（同一 `lineGroup`），不再生成圆点 |
 | `no_connect` | 两条 `LINE`（X 标记） |
-| `label` / `global_label` / `hierarchical_label` | `NETLABEL` |
+| `label` / `global_label` / `hierarchical_label` | 导线组 `NET` 属性 / 网络标识（net flag）/ 网络端口（net port） |
 | `text` / `text_box` | `TEXT`（+ `RECT` 边框） |
 | `polyline` / `rectangle` / `circle` / `arc` / `bezier` | `POLY` / `RECT` / `CIRCLE` / `ARC`（三点求圆心）/ `BEZIER`，stroke/fill 样式同步映射 |
 | `image` | `OBJ`（base64 内嵌） |
-| `sheet`（层次图） | `RECT` + 名称 `TEXT` + 引脚 `NETLABEL` |
+| `sheet`（层次图） | 复用模块符号（`SYMBOL` docType 17）+ `COMPONENT`，关联独立子原理图（CBB 实例化） |
+| `power` 符号 / `PWR_FLAG` | 网络标识（docType 18）/ 无电气符号（docType 21，无 `PIN`，保留 KiCad 图形） |
 | 引脚电气/图形类型 | `PIN.electric` / `PIN.pinShape` 数值映射 |
 | `footprint`（含 `pad`） | `.epcb2` 内嵌 `FOOTPRINT` 文档段（`PART`/`PAD`/丝印图形）+ `DEVICE` 文档段 + `COMPONENT` 放置 + `Designator`/`Footprint`/`Device` `ATTR` |
 | pad 网络 / 椭圆孔 | `PAD_NET`（绑定元件引脚）+ `NET` 索引记录 / `holeType ROUND` 宽高 |
