@@ -400,6 +400,39 @@ function main() {
       'filled_polygon becomes a POURED linked to the POUR');
     assert(pcbDoc.records.some(r => r.type === 'NET' && r.head.id === JSON.stringify(['NET','VCC'])), 'NET index record exists for zone net');
 
+    // Multi-layer boards: the static layer table ships inner copper disabled;
+    // the converter must enable every inner layer the KiCad stack declares,
+    // otherwise their tracks/pours are dropped and pads show ratlines.
+    const innerSch = `(kicad_pcb (version 20221018) (generator pcbnew)
+  (layers
+    (0 "F.Cu" signal)
+    (1 "In1.Cu" power)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+  )
+  (net 0 "")
+  (net 1 "GND")
+  (segment (start 10 10) (end 20 10) (width 0.25) (layer "In1.Cu") (net 1))
+  (gr_rect (start 0 0) (end 30 20) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts"))
+)`;
+    const innerDir = path.join(tmp, 'inner-pcb');
+    fs.mkdirSync(innerDir, { recursive: true });
+    fs.writeFileSync(path.join(innerDir, 'inner.kicad_pcb'), innerSch);
+    const innerOut = path.join(tmp, 'inner-pcb-out');
+    run([SCRIPTS + '/convert-kicad.js', 'convert', innerDir, innerOut, '--project-name', 'inner']);
+    const innerDocs = docSegments(readRecords(path.join(innerOut, 'pcb', 'PCB1.epcb2')));
+    const innerPcb = innerDocs[innerDocs.length - 1];
+    const innerLayer = innerPcb.records.find(r => r.type === 'LAYER' && r.body.layerId === 15);
+    const unusedInner = innerPcb.records.find(r => r.type === 'LAYER' && r.body.layerId === 16);
+    const innerTrack = innerPcb.records.find(r => r.type === 'LINE' && r.body.layerId === 15);
+    assert(!!innerLayer && innerLayer.body.use === true && innerLayer.body.show === true,
+      'inner copper layers declared by the board are enabled (no dropped tracks)',
+      JSON.stringify(innerLayer && innerLayer.body));
+    assert(!!unusedInner && unusedInner.body.use === false,
+      'inner layers not in the board stack stay disabled');
+    assert(!!innerTrack && innerTrack.body.netName === 'GND',
+      'In1.Cu track keeps layerId 15 and its net name');
+
     // ---- KiCad library dir → elibz2 package ----
     const libDir = path.join(tmp, 'libsrc');
     fs.mkdirSync(path.join(libDir, 'MY_FP.pretty'), { recursive: true });

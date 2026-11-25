@@ -112,7 +112,7 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | `gr_line` / `gr_arc` / `gr_rect` / `gr_poly` / `gr_circle` / `bezier` | `LINE` / `ARC` / 闭合 `POLY`（圆为 `["CIRCLE",…]` 路径、贝塞尔为 `"C"` 段路径） |
 | `gr_text` | `STRING`（对齐 origin、镜像、knockout→reverse） |
 | `gr_rect`/`gr_line`/`gr_arc`/`gr_poly` on `Edge.Cuts` | 拼接为 `POLY` `BOARD_OUTLINE`（`layerId=11`） |
-| 层映射 | `F.Cu=1`、`B.Cu=2`、`F.SilkS=3`、`B.SilkS=4`、`F.Mask=5`、`Edge.Cuts=11`、`In{n}.Cu=14+n`…；PCB 文档写入官方 60 层表 |
+| 层映射 | `F.Cu=1`、`B.Cu=2`、`F.SilkS=3`、`B.SilkS=4`、`F.Mask=5`、`Edge.Cuts=11`、`In{n}.Cu=14+n`…；PCB 文档写入官方 60 层表，并按 KiCad 的层栈启用实际使用的内层（`use/show`），避免内层走线与覆铜丢失 |
 
 - 单位换算：KiCad mm → eprj3 mil（×39.3700787）；坐标轴翻转：KiCad Y 向下 → eprj3 Y 向上；旋转角 (360−deg)%360
 - uuid 关联（官方约定）：`.esch2` 页面 / `.epcb2` / `.ecfg` 的 `DOCHEAD.uuid` 分别等于索引中 `sheets` / `pcbs` / `schematics` 的 uuid

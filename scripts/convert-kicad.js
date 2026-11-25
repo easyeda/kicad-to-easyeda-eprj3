@@ -1703,11 +1703,31 @@ function convertPcb(srcFile, dst, pcb, opts = {}) {
     return usedFps[key];
   }
 
+  // Inner copper layers are disabled (`use:false`) in the static layer table;
+  // a multi-layer KiCad board must enable every inner layer it declares, or
+  // the client drops their tracks/pours and the pads look unrouted (ratlines).
+  const usedInner = new Set();
+  const layersNode = root.slice(1).find(n => Array.isArray(n) && n[0].v === 'layers');
+  for (const it of layersNode ? layersNode.slice(1) : []) {
+    if (!Array.isArray(it) || !it[1]) continue;
+    const m = /^In(\d+)\.Cu$/.exec(it[1].v || '');
+    if (!m) continue;
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 32) usedInner.add(14 + n);
+  }
+
   // DOCHEAD + META + the static editor config block the client requires.
   const docRecords = [
     docHead('PCB', pcb.uuid),
     { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, parent: '', source: '', board: pcb.board, zIndex: null } },
-    ...PCB_CONFIG.map((r, i) => ({ head: { type: r.type, ticket: 2 + i, id: r.id }, body: r.body }))
+    ...PCB_CONFIG.map((r, i) => {
+      const rec = { head: { type: r.type, ticket: 2 + i, id: r.id }, body: r.body };
+      if (r.type === 'LAYER' && r.body.layerType === 'SIGNAL') {
+        const use = usedInner.has(r.body.layerId);
+        rec.body = { ...r.body, use, show: use };
+      }
+      return rec;
+    })
   ];
   let ticket = docRecords.length + 1;
   const body = [];

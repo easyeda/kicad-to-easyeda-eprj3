@@ -112,7 +112,7 @@ Output strictly follows the official format documentation from [easyeda-pro-form
 | `gr_line` / `gr_arc` / `gr_rect` / `gr_poly` / `gr_circle` / `bezier` | `LINE` / `ARC` / closed `POLY` (circles as `["CIRCLE",…]` paths, beziers as `"C"`-segment paths) |
 | `gr_text` | `STRING` (alignment origin, mirroring, knockout→reverse) |
 | `gr_rect`/`gr_line`/`gr_arc`/`gr_poly` on `Edge.Cuts` | Stitched into `POLY` `BOARD_OUTLINE` (`layerId=11`) |
-| Layer mapping | `F.Cu=1`, `B.Cu=2`, `F.SilkS=3`, `B.SilkS=4`, `F.Mask=5`, `Edge.Cuts=11`, `In{n}.Cu=14+n`…; the PCB doc carries the official 60-layer table |
+| Layer mapping | `F.Cu=1`, `B.Cu=2`, `F.SilkS=3`, `B.SilkS=4`, `F.Mask=5`, `Edge.Cuts=11`, `In{n}.Cu=14+n`…; the PCB doc carries the official 60-layer table and enables the inner layers the KiCad stack actually uses (`use/show`), so their tracks and pours are not dropped |
 
 - Unit conversion: KiCad mm → eprj3 mil (×39.3700787); axis flip: KiCad Y-down → eprj3 Y-up; rotation (360−deg)%360
 - uuid linkage (official convention): the `DOCHEAD.uuid` of the `.esch2` page / `.epcb2` / `.ecfg` equals the `sheets` / `pcbs` / `schematics` uuid in the index respectively
