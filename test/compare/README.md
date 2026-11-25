@@ -22,6 +22,10 @@ Reports and the summary are written to `tmp/compare/out/`.
   translated to the `REF$CBBn` form.
 - **PCB primitive counts** — tracks (segments + arcs), vias, placed pads,
   footprints, copper zones (+ keepouts) and the used net-name set.
+- **Placed pads** — every KiCad pad is matched to an EDA pad by position and
+  compared for pad number, net and copper side. Catches pads mirrored onto the
+  wrong side or permuted inside a bottom-side footprint, which otherwise only
+  surface as airwires.
 - **Layer count** — copper layers enabled in the EDA layer table vs KiCad's
   `(layers …)` stack.
 - **Stackup** — `LAYER_PHYS` copper coverage and the board thickness reported

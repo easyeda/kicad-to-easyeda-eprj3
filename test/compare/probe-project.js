@@ -55,6 +55,19 @@ if (pcbs[0]) {
       };
     } catch (e) { return { err: String(e) }; }
   });
+  // Placed pad centres/sides/nets — catches wrong pad layers and permuted pad
+  // positions inside bottom-side footprints (both produce airwires).
+  try {
+    const pads = (await eda.pcb_PrimitivePad.getAll()) || [];
+    out.pcbPads = pads.map(p => {
+      try {
+        return {
+          x: p.getState_X(), y: p.getState_Y(), layer: p.getState_Layer(),
+          net: p.getState_Net() || '', num: p.getState_PadNumber()
+        };
+      } catch (e) { return { err: String(e) }; }
+    });
+  } catch (e) { out.pcbPadsError = String(e && e.message || e); }
 
   // Layer/stackup state + a ratline-only render. Ratlines are drawn on layer
   // 57 with a blue-dominant color; counting those pixels gives a cheap

@@ -195,6 +195,40 @@ function comparePcbMeta(probeValue, ref, edaMeta, report) {
   if (missingNets.length || extraNets.length) {
     issues.push({ type: 'pcb-net-names', missing: missingNets.slice(0, 8), extra: extraNets.slice(0, 8) });
   }
+  // Pad-level check: every KiCad placed pad must exist in EDA at the same
+  // position, with the same number, net and copper side. This catches the
+  // bottom-footprint bugs that only show up as airwires (pads mirrored to the
+  // wrong side, or pad positions permuted inside an asymmetric footprint).
+  const kPads = Array.isArray(km.padList) ? km.padList : [];
+  const ePads = Array.isArray(probeValue.pcbPads) ? probeValue.pcbPads.filter(p => Number.isFinite(p.x)) : [];
+  let padCheck = null;
+  if (kPads.length && ePads.length) {
+    const norm = n => (!n || /^unconnected-\(/.test(n)) ? '' : n;
+    const used = new Set();
+    const bad = [];
+    for (const kp of kPads) {
+      let bi = -1, bd = Infinity;
+      for (let i = 0; i < ePads.length; i++) {
+        if (used.has(i)) continue;
+        const d = Math.hypot(ePads[i].x - kp.x, ePads[i].y - kp.y);
+        if (d < bd) { bd = d; bi = i; }
+      }
+      if (bi < 0 || bd > 6) {
+        bad.push({ num: kp.num, net: kp.net, x: +kp.x.toFixed(1), y: +kp.y.toFixed(1), d: +bd.toFixed(1) });
+        continue;
+      }
+      used.add(bi);
+      const ep = ePads[bi];
+      if (String(ep.num) !== String(kp.num) || ep.layer !== kp.side || norm(ep.net) !== norm(kp.net)) {
+        bad.push({
+          num: kp.num, net: kp.net, kicadSide: kp.side,
+          edaSide: ep.layer, edaNum: ep.num, edaNet: ep.net, d: +bd.toFixed(1)
+        });
+      }
+    }
+    if (bad.length) issues.push({ type: 'pcb-pads', count: bad.length, samples: bad.slice(0, 6) });
+    padCheck = { kicad: kPads.length, eda: ePads.length, mismatches: bad.length };
+  }
   if (km.copperLayers.length !== edaMeta.copperLayers.length) {
     issues.push({ type: 'pcb-layers', kicad: km.copperLayers.length, eda: edaMeta.copperLayers.length });
   }
@@ -258,6 +292,7 @@ function comparePcbMeta(probeValue, ref, edaMeta, report) {
       copper: edaMeta.copperLayers.length, stackupCopper: edaMeta.stackupCopper, nets: edaMeta.nets
     },
     rules: { kicad: nc || null, eda: edaMeta.rules, minimums: ref.rules && ref.rules.minimums },
+    padCheck,
     stackup: {
       kicadCopper: km.stackupCopper, edaCopper: edaMeta.stackupCopper,
       kicadThicknessMm: +km.stackupThickness.toFixed(3), eda: st || null

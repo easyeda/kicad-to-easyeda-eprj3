@@ -231,7 +231,7 @@ function parseKicadPcb(file) {
   const meta = {
     copperLayers: [], tracks: 0, vias: 0, pads: 0, footprints: 0,
     zones: 0, keepouts: 0, nets: 0, netNames: [], stackupCopper: 0,
-    stackupDielectric: 0, stackupThickness: 0, boardThickness: 0
+    stackupDielectric: 0, stackupThickness: 0, boardThickness: 0, padList: []
   };
   let root;
   try { root = parse(fs.readFileSync(file, 'utf8')); } catch (e) { return meta; }
@@ -248,7 +248,10 @@ function parseKicadPcb(file) {
   const netNameOf = node => {
     const a = findSub(node, 'net');
     if (!a) return '';
-    return (a[1] || netTable[a[0]] || '').replace(/\{slash\}/g, '/');
+    let name = a[1] || netTable[a[0]];
+    // KiCad 8+ can write (net "NAME") without the numeric index.
+    if (!name && a[0] && !/^\d+$/.test(String(a[0]))) name = String(a[0]);
+    return (name || '').replace(/\{slash\}/g, '/');
   };
   for (const n of root.slice(1)) {
     if (!Array.isArray(n) || !n[0]) continue;
@@ -291,10 +294,27 @@ function parseKicadPcb(file) {
       // counted through usedNets below
     } else if (h === 'footprint' || h === 'module') {
       meta.footprints++;
+      const fat = findSub(n, 'at') || [0, 0, 0];
+      const fx = parseFloat(fat[0]) || 0, fy = parseFloat(fat[1]) || 0;
+      const fa = (parseFloat(fat[2]) || 0) * Math.PI / 180;
       for (const it of n.slice(1)) {
         if (!Array.isArray(it) || it[0].v !== 'pad') continue;
         meta.pads++;
         const nn = netNameOf(it); addNet(nn);
+        // Placed pad centre for the pad-level comparison (KiCad local pad
+        // coordinates rotated by the footprint angle). Side uses the absolute
+        // KiCad layer list: thru-hole → MULTI(12), B.Cu → 2, else top(1).
+        const pat = findSub(it, 'at') || [0, 0, 0];
+        const px = parseFloat(pat[0]) || 0, py = parseFloat(pat[1]) || 0;
+        const dx = px * Math.cos(fa) + py * Math.sin(fa);
+        const dy = -px * Math.sin(fa) + py * Math.cos(fa);
+        const layers = findSub(it, 'layers') || [];
+        const type = it[2] && it[2].v || '';
+        const side = type.includes('thru_hole') ? 12 : (layers.some(l => /^B\./.test(l)) ? 2 : 1);
+        meta.padList.push({
+          num: it[1] && it[1].v, net: nn, side,
+          x: (fx + dx) * MIL_PER_MM, y: -(fy + dy) * MIL_PER_MM
+        });
       }
     } else if (h === 'general') {
       const th = findSub(n, 'thickness');
