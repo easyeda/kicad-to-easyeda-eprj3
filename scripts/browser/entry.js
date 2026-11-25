@@ -34,8 +34,19 @@ const PROJECT_SCHEMA = [
  * Browser conversion: files are [{ path, data:Uint8Array }] relative to the
  * selected KiCad project folder. Returns the written eprj3 files under a
  * "<projectName>/" prefix, ready to be zipped/downloaded.
+ *
+ * Calls are serialized: the in-memory fs/warning sink are process-global, so
+ * converting two projects in parallel would mix their files.
  */
-async function convertProjectFiles(input) {
+let convertQueue = Promise.resolve();
+function convertProjectFiles(input) {
+  const run = () => doConvertProjectFiles(input);
+  const next = convertQueue.then(run, run);
+  convertQueue = next.then(() => {}, () => {});
+  return next;
+}
+
+async function doConvertProjectFiles(input) {
   const opts = input || {};
   const files = Array.isArray(opts.files) ? opts.files : [];
   if (!files.length) throw new Error('No input files');
