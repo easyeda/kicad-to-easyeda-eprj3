@@ -8,10 +8,22 @@
 
 - **工程转换**：批量遍历目录下所有 `.kicad_sch` / `.kicad_pcb`，生成完整的 eprj3 文件夹工程（`<name>.eprj3` 索引 + `sch/` + `pcb/`）
 - **库转换**：把一个目录下的全部 KiCad 库（`*.kicad_sym` 符号库 + `*.pretty/*.kicad_mod` 封装库）打包成一个嘉立创EDA专业版库文件 `.elibz2`
+- **免安装浏览器版**：`kicad-to-eprj3.html` 在浏览器里完成转换（无需 Node.js，文件不上传）
+- **独立 JS**：单文件同时支持 Node.js 命令行与浏览器调用，由 `npm run build` 构建
 
 ## 环境要求
 
-- Node.js ≥ 18，无任何 npm 依赖。
+- Node.js ≥ 18，无任何 npm 依赖（仅命令行与构建需要；浏览器页面不需要）。
+
+## 浏览器版（免安装）
+
+从 GitHub **Releases** 页面下载 `kicad-to-eprj3-<版本号>.zip` 并解压，用最新版 Chrome/Edge 打开 `kicad-to-eprj3.html`：
+
+1. 添加一个或多个 KiCad 工程文件夹（点击选择或直接拖入页面）。
+2. 点击「开始转换」——所有处理都在本机浏览器内完成，文件不会上传。
+3. 下载 `.eprj3.zip`，解压后用嘉立创EDA专业版打开 `<工程名>/<工程名>.eprj3`。
+
+压缩包里同时包含独立 JS、本说明（中英文）与许可证。
 
 ## 用法
 
@@ -84,6 +96,34 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 - 电源符号（`symbol_type "power"`）的 META `docType` 写为 18；封装文档包含 19 层表 + `ACTIVE_LAYER` + 完整 `CANVAS`，且不带 `PART` 记录
 - 示例：`example/easyeda/easyeda-pro-libs.elibz2` 为嘉立创EDA专业版导出的参考库包
 
+### 3) 独立打包产物（Node 命令行 + 浏览器页面）
+
+构建发行产物：
+
+```bash
+npm run build
+```
+
+输出到 `dist/`：
+
+| 文件 | 用途 |
+| --- | --- |
+| `kicad-to-eprj3-<版本号>.js` | 单文件 UMD：Node 命令行 **与** 浏览器 API |
+| `kicad-to-eprj3.html` | 自包含转换页面（已内联脚本） |
+| `README.md` | 中英文普通用户使用说明（随 zip 分发） |
+| `kicad-to-eprj3-<版本号>.zip` | 上述三个文件 + `LICENSE` |
+
+独立 JS 的用法与多文件命令行一致：
+
+```bash
+node dist/kicad-to-eprj3-<版本号>.js convert <KiCad工程目录> <输出目录>
+node dist/kicad-to-eprj3-<版本号>.js convert-lib <KiCad库目录> <输出.elibz2>
+```
+
+在浏览器中会暴露 `window.KicadToEpj3`（`convertProjectFiles`、`zipProject`、`zipStore` 等）。
+
+**版本与发布**：构建工作流 `.github/workflows/build-release.yml` 需要手动触发（`workflow_dispatch`），默认把版本号最后一位 +1，运行测试、构建产物、把版本提交推送到 `main`、打 `v<版本号>` 标签并把 zip 挂到 GitHub Release。每次更新都必须变更最后一位（`node build/version.js patch` 或 `npm run version:bump`）。工作流需要向 `main` 推送的权限（若被分支保护拒绝，请在保护规则中允许 GitHub Actions 推送）。
+
 ## 转换覆盖范围（best-effort）
 
 输出严格对齐 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的官方格式文档（types / 字段定义 / JSON Schemas），并以真实导出数据校准 schema 与实际导出不一致之处；可另参考 [官方 eprj3 格式示例工程](https://github.com/easyeda/easyeda-pro-eprj3-format)：
@@ -137,9 +177,18 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 ```
 kicad-to-easyeda-eprj3/
 ├── scripts/
-│   ├── convert-kicad.js      ← 工程批量转换入口（→ eprj3 工程目录）
-│   ├── convert-kicad-lib.js  ← 库转换入口（→ .elibz2 库包）
+│   ├── convert-kicad.js      ← 工程转换 CLI 入口
+│   ├── convert-kicad-lib.js  ← 库转换 CLI 入口
+│   ├── browser/
+│   │   ├── entry.js          ← 独立包入口（Node 命令行 + 浏览器 API）
+│   │   ├── vfs.js            ← 浏览器页面使用的内存文件系统
+│   │   ├── active-fs.js      ← 单次转换的活动文件系统切换
+│   │   ├── node-fs.js / node-path.js ← 构建包注入的宿主 Node fs/path
+│   │   ├── node-shims/       ← 浏览器与 Node 共用的 fs/path/crypto/zlib 门面
+│   │   └── zip-store.js      ← 下载用的零依赖 STORE 模式 ZIP 写入
 │   └── lib/
+│       ├── convert-project.js ← 工程转换流程（CLI 与独立包共用）
+│       ├── convert-lib.js    ← 库转换流程（CLI 与独立包共用）
 │       ├── kicad.js          ← KiCad S-expression 解析器
 │       ├── kicad-to-eprj3.js ← 符号/封装 → eprj3 记录
 │       ├── schematic-convert.js ← 原理图页转换（符号/电源标识/网络端口/层次块/图框）
@@ -150,11 +199,19 @@ kicad-to-easyeda-eprj3/
 │       ├── elibz2.js         ← .elibz2 库包组装（device2.json + .elibu）
 │       ├── zip.js            ← 零依赖 zip 读写（zlib deflate/store）
 │       └── utils.js
+├── build/
+│   ├── bundle.js             ← 构建独立 JS、HTML 页面与 zip
+│   ├── version.js            ← 版本号变更（patch/minor/major/none）
+│   ├── app.html              ← 浏览器页面模板
+│   └── artifact-readme.md    ← 随 zip 分发的中英文用户说明
+├── .github/workflows/
+│   └── build-release.yml     ← 手动构建 → 版本变更 → 打标签 → 发布产物
 ├── example/
 │   ├── easyeda/              ← 嘉立创EDA专业版参考库包 easyeda-pro-libs.elibz2
 │   └── kicad/                ← 示例 KiCad 工程
 └── test/
     ├── smoke.js              ← 端到端冒烟测试（165 项断言）
+    ├── bundle.test.js        ← 独立包/浏览器 API/HTML 测试（23 项断言）
     ├── compare/              ← KiCad ↔ eprj3 转换对比（网表/BOM/PCB 图元/层栈/飞线）
     └── validate-format.js    ← 用官方 JSON Schemas 校验生成记录的格式验证器
 ```
@@ -162,7 +219,8 @@ kicad-to-easyeda-eprj3/
 ## 测试
 
 ```bash
-npm test
+npm test          # 冒烟 + hostpath + 独立包测试
+npm run build     # dist/kicad-to-eprj3-<版本号>.{js,zip} 与 kicad-to-eprj3.html
 ```
 
 另可用官方 Schemas 逐条校验生成的记录（sch/pcb/lib 三种上下文，lib 按文档 docType 自动路由）：

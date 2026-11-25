@@ -8,10 +8,22 @@ Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCa
 
 - **Project conversion**: Batch-traverses all `.kicad_sch` / `.kicad_pcb` files under a directory and generates a complete eprj3 folder project (`<name>.eprj3` index + `sch/` + `pcb/`)
 - **Library conversion**: Packs all KiCad libraries under a directory (`*.kicad_sym` symbol libs + `*.pretty/*.kicad_mod` footprint libs) into a single EasyEDA Pro library file `.elibz2`
+- **No-install browser version**: `kicad-to-eprj3.html` converts projects entirely in the browser (no Node.js, no upload)
+- **Standalone JS**: one file usable both as a Node.js CLI and as a browser script, built by `npm run build`
 
 ## Requirements
 
-- Node.js ≥ 18, with no npm dependencies.
+- Node.js ≥ 18, with no npm dependencies (only needed for the CLI/build; the browser page needs none).
+
+## Browser version (no installation)
+
+Download `kicad-to-eprj3-<version>.zip` from the GitHub **Releases** page and unzip it. Open `kicad-to-eprj3.html` in a recent Chrome/Edge:
+
+1. Add one or more KiCad project folders (click or drag them onto the page).
+2. Click **Convert** — everything is processed locally; nothing is uploaded.
+3. Download the `.eprj3.zip`, unzip it, then open `<project>/<project>.eprj3` in EasyEDA Pro.
+
+The zip also contains the standalone JS, this guide (bilingual) and the license.
 
 ## Usage
 
@@ -84,6 +96,34 @@ The resulting `DeviceLED.elibz2` can be installed into your local libraries thro
 - Power symbols (`symbol_type "power"`) get META `docType:18`; footprint docs include the 19-layer table + `ACTIVE_LAYER` + a full `CANVAS` and carry no `PART` record
 - Example: `example/easyeda/easyeda-pro-libs.elibz2` is a reference library package exported from EasyEDA Pro
 
+### 3) Standalone bundle (Node CLI + browser page)
+
+Build the distributable artifacts with:
+
+```bash
+npm run build
+```
+
+This writes to `dist/`:
+
+| File | Purpose |
+| --- | --- |
+| `kicad-to-eprj3-<version>.js` | Single-file UMD bundle: Node CLI **and** browser API |
+| `kicad-to-eprj3.html` | Self-contained conversion page (bundle inlined) |
+| `README.md` | Bilingual end-user guide shipped in the zip |
+| `kicad-to-eprj3-<version>.zip` | The three files above + `LICENSE` |
+
+The standalone JS works exactly like the multi-file CLI:
+
+```bash
+node dist/kicad-to-eprj3-<version>.js convert <KiCad project directory> <output directory>
+node dist/kicad-to-eprj3-<version>.js convert-lib <KiCad library directory> <output.elibz2>
+```
+
+In a browser it exposes `window.KicadToEpj3` (`convertProjectFiles`, `zipProject`, `zipStore`, …).
+
+**Versioning / release**: the build workflow (`.github/workflows/build-release.yml`, manual `workflow_dispatch`) bumps the version (default: **patch / last digit**), runs the tests, builds the artifacts, commits the bump to `main`, tags `v<version>` and attaches the zip to the GitHub release. Every update must bump the last digit (`node build/version.js patch`, or `npm run version:bump`). The workflow needs permission to push to `main` (allow GitHub Actions in the branch protection rules if the push is rejected).
+
 ## Conversion Coverage (best-effort)
 
 Output strictly follows the official format documentation from [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) (types / field definitions / JSON Schemas), calibrated against real exported data where the schemas diverge from actual app output; see also the [official eprj3 format example project](https://github.com/easyeda/easyeda-pro-eprj3-format):
@@ -137,9 +177,18 @@ Output strictly follows the official format documentation from [easyeda-pro-form
 ```
 kicad-to-easyeda-eprj3/
 ├── scripts/
-│   ├── convert-kicad.js      ← Batch project conversion entry point (→ eprj3 project directory)
-│   ├── convert-kicad-lib.js  ← Library conversion entry point (→ .elibz2 package)
+│   ├── convert-kicad.js      ← Project CLI wrapper
+│   ├── convert-kicad-lib.js  ← Library CLI wrapper
+│   ├── browser/
+│   │   ├── entry.js          ← Standalone bundle entry (Node CLI + browser API)
+│   │   ├── vfs.js            ← In-memory filesystem used by the browser page
+│   │   ├── active-fs.js      ← Active filesystem switch for one conversion
+│   │   ├── node-fs.js / node-path.js ← Host Node fs/path injected by the bundle
+│   │   ├── node-shims/       ← fs/path/crypto/zlib facades for browsers + Node
+│   │   └── zip-store.js      ← Dependency-free STORE-mode ZIP writer for downloads
 │   └── lib/
+│       ├── convert-project.js ← Project conversion flow (shared by CLI + bundle)
+│       ├── convert-lib.js    ← Library conversion flow (shared by CLI + bundle)
 │       ├── kicad.js          ← KiCad S-expression parser
 │       ├── kicad-to-eprj3.js ← Symbols/footprints → eprj3 records
 │       ├── schematic-convert.js ← Schematic page conversion (symbols/net flags/net ports/hierarchy/frame)
@@ -150,11 +199,19 @@ kicad-to-easyeda-eprj3/
 │       ├── elibz2.js         ← .elibz2 package assembly (device2.json + .elibu)
 │       ├── zip.js            ← Dependency-free zip read/write (zlib deflate/store)
 │       └── utils.js
+├── build/
+│   ├── bundle.js             ← Builds the standalone JS, HTML page and zip
+│   ├── version.js            ← Version bump (patch/minor/major/none)
+│   ├── app.html              ← Browser page template
+│   └── artifact-readme.md    ← Bilingual end-user guide shipped in the zip
+├── .github/workflows/
+│   └── build-release.yml     ← Manual build → version bump → tag → release asset
 ├── example/
 │   ├── easyeda/              ← Reference EasyEDA Pro library package easyeda-pro-libs.elibz2
 │   └── kicad/                ← Sample KiCad project
 └── test/
     ├── smoke.js              ← End-to-end smoke suite (165 assertions)
+    ├── bundle.test.js        ← Standalone bundle / browser API / HTML tests (23 assertions)
     ├── compare/              ← KiCad ↔ eprj3 comparison (netlist/BOM/PCB primitives/stackup/ratlines)
     └── validate-format.js    ← Format validator checking generated records against the official JSON Schemas
 ```
@@ -162,7 +219,8 @@ kicad-to-easyeda-eprj3/
 ## Testing
 
 ```bash
-npm test
+npm test          # smoke + hostpath + standalone bundle tests
+npm run build     # dist/kicad-to-eprj3-<version>.{js,zip} + kicad-to-eprj3.html
 ```
 
 Generated records can additionally be validated one by one against the official Schemas (`sch`/`pcb`/`lib` contexts; `lib` routes each doc's records by its docType):
