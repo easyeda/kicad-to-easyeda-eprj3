@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KiCad → EasyEDA Pro 转换器</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --text: #1f2328;
+    --muted: #656d76;
+    --line: #d0d7de;
+    --accent: #1f6feb;
+    --accent-weak: #ddf4ff;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --err: #cf222e;
+    --radius: 12px;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #8b949e;
+      --line: #30363d; --accent: #4493f8; --accent-weak: #11233b;
+      --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: .2px; }
+  .sub { color: var(--muted); margin: 0; }
+  .lang { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 20px; margin-top: 18px;
+  }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .step b { display: block; font-size: 14px; margin-bottom: 4px; }
+  .step span { color: var(--muted); font-size: 13px; }
+  .drop {
+    border: 2px dashed var(--line); border-radius: var(--radius); padding: 34px 20px; text-align: center;
+    transition: border-color .15s, background .15s; cursor: pointer; background: transparent;
+  }
+  .drop.over { border-color: var(--accent); background: var(--accent-weak); }
+  .drop .big { font-size: 17px; font-weight: 600; }
+  .drop .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+  button.primary, button.ghost {
+    border-radius: 8px; padding: 9px 16px; font-size: 14px; cursor: pointer; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:disabled, button.ghost:disabled { opacity: .5; cursor: not-allowed; }
+  .project { display: flex; gap: 14px; align-items: flex-start; padding: 14px 0; border-top: 1px solid var(--line); }
+  .project:first-child { border-top: none; }
+  .project .meta { flex: 1; min-width: 0; }
+  .project .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project .files { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .badge { display: inline-block; font-size: 12px; border-radius: 999px; padding: 2px 9px; margin-left: 8px; vertical-align: 1px; }
+  .badge.idle { background: var(--accent-weak); color: var(--accent); }
+  .badge.done { background: rgba(26,127,55,.12); color: var(--ok); }
+  .badge.partial { background: rgba(154,103,0,.14); color: var(--warn); }
+  .badge.error { background: rgba(207,34,46,.12); color: var(--err); }
+  .badge.converting { background: rgba(68,147,248,.14); color: var(--accent); }
+  .project .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .linkbtn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 4px; }
+  .linkbtn:hover { color: var(--err); }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre.log {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0;
+  }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0; }
+  .note { color: var(--muted); font-size: 13px; }
+  .note ul { margin: 6px 0 0; padding-left: 18px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
+  @media (max-width: 700px) { .steps { grid-template-columns: 1fr; } .project { flex-wrap: wrap; } .project .actions { justify-content: flex-start; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title"></h1>
+      <p class="sub" id="subtitle"></p>
+    </div>
+    <button class="lang" id="langBtn" type="button">English</button>
+  </header>
+
+  <div class="steps">
+    <div class="step"><b id="s1t"></b><span id="s1d"></span></div>
+    <div class="step"><b id="s2t"></b><span id="s2d"></span></div>
+    <div class="step"><b id="s3t"></b><span id="s3d"></span></div>
+  </div>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <div class="big" id="dropTitle"></div>
+      <div class="hint" id="dropHint"></div>
+      <input id="picker" type="file" webkitdirectory directory multiple style="display:none">
+    </div>
+    <div class="row">
+      <button class="primary" id="convertBtn" type="button"></button>
+      <button class="ghost" id="downloadAllBtn" type="button"></button>
+      <button class="ghost" id="clearBtn" type="button"></button>
+    </div>
+    <div id="list"></div>
+  </div>
+
+  <div class="card">
+    <div class="note" id="notes"></div>
+  </div>
+
+  <footer><span id="footerText"></span></footer>
+</div>
+
+<script>
+/*__K2E_BUNDLE__*/
+</script>
+<script>
+(function () {
+  'use strict';
+  var api = window.KicadToEpj3;
+  var RELEVANT = /\.(kicad_sch|kicad_pcb|kicad_pro)$/i;
+  var VERSION = (api && api.version) || '__K2E_VERSION__';
+
+  var I18N = {
+    zh: {
+      htmlLang: 'zh-CN',
+      title: 'KiCad 工程 → 嘉立创EDA 专业版',
+      subtitle: '在浏览器里把 KiCad 工程转换成 .eprj3，无需安装任何软件',
+      s1t: '① 添加工程目录', s1d: '选择一个或多个 KiCad 工程文件夹',
+      s2t: '② 开始转换', s2d: '文件只在你的电脑上处理，不会上传',
+      s3t: '③ 下载并打开', s3d: '解压后用嘉立创EDA专业版打开 .eprj3',
+      dropTitle: '把 KiCad 工程文件夹拖到这里',
+      dropHint: '或点击选择文件夹（可多次添加；支持一次拖入多个文件夹）',
+      convert: '开始转换',
+      downloadAll: '全部下载 (.zip)',
+      clear: '清空列表',
+      empty: '还没有添加工程。请先选择或拖入 KiCad 工程文件夹。',
+      files: function (n) { return n + ' 个文件'; },
+      statusIdle: '待转换', statusConverting: '转换中…', statusDone: '完成',
+      statusPartial: '部分完成', statusError: '失败',
+      download: '下载 .eprj3.zip',
+      remove: '移除',
+      warnings: function (n) { return n + ' 条提示'; },
+      logs: '查看日志',
+      failedPcbs: function (n) { return n + ' 块 PCB 转换失败'; },
+      needFiles: '所选文件夹里没有 KiCad 工程文件（.kicad_sch / .kicad_pcb）。',
+      convertingNow: '正在转换：',
+      allDone: '全部转换完成。',
+      notesTitle: '说明',
+      note1: '支持一次添加多个工程目录，也支持把多个文件夹一起拖进页面。',
+      note2: '转换完全在浏览器本地完成，文件不会上传到任何服务器。',
+      note3: '输出是 .eprj3 文件夹工程，已打包成 zip。解压后，用嘉立创EDA专业版“打开工程”选择 <工程名>/<工程名>.eprj3。',
+      note4: '工程目录里的 *-unroute.kicad_pcb（未布线副本）也会被转换，打开时选择你需要的 PCB 即可。',
+      note5: '建议使用最新版 Chrome 或 Edge 浏览器。',
+      footer: 'kicad-to-eprj3 v' + VERSION + ' · 本地运行，不上传文件'
+    },
+    en: {
+      htmlLang: 'en',
+      title: 'KiCad Project → EasyEDA Pro',
+      subtitle: 'Convert KiCad projects to .eprj3 right in your browser — nothing to install',
+      s1t: '① Add project folders', s1d: 'Pick one or more KiCad project folders',
+      s2t: '② Convert', s2d: 'Everything runs locally; files are never uploaded',
+      s3t: '③ Download and open', s3d: 'Unzip, then open the .eprj3 in EasyEDA Pro',
+      dropTitle: 'Drop KiCad project folders here',
+      dropHint: 'or click to choose a folder (add several; multiple folders can be dropped at once)',
+      convert: 'Convert',
+      downloadAll: 'Download all (.zip)',
+      clear: 'Clear list',
+      empty: 'No projects yet. Choose or drop a KiCad project folder first.',
+      files: function (n) { return n + ' file' + (n === 1 ? '' : 's'); },
+      statusIdle: 'Ready', statusConverting: 'Converting…', statusDone: 'Done',
+      statusPartial: 'Partly done', statusError: 'Failed',
+      download: 'Download .eprj3.zip',
+      remove: 'Remove',
+      warnings: function (n) { return n + ' warning' + (n === 1 ? '' : 's'); },
+      logs: 'Show log',
+      failedPcbs: function (n) { return n + ' PCB(s) failed'; },
+      needFiles: 'No KiCad project files (.kicad_sch / .kicad_pcb) were found in the selected folder.',
+      convertingNow: 'Converting: ',
+      allDone: 'All projects converted.',
+      notesTitle: 'Notes',
+      note1: 'Add several project folders at once, or drop multiple folders onto the page.',
+      note2: 'Conversion runs entirely in your browser; files are never uploaded.',
+      note3: 'The output is a .eprj3 folder project packed as a zip. Unzip it and use EasyEDA Pro “Open Project” to select <name>/<name>.eprj3.',
+      note4: '*-unroute.kicad_pcb files in the project folder are converted too; open the PCB you need.',
+      note5: 'A recent Chrome or Edge browser is recommended.',
+      footer: 'kicad-to-eprj3 v' + VERSION + ' · runs locally, no uploads'
+    }
+  };
+  function storageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function storageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* file:// may block storage */ } }
+  var savedLang = storageGet('k2e-lang');
+  var lang = savedLang === 'zh' || savedLang === 'en'
+    ? savedLang
+    : ((navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+  var T = I18N[lang];
+
+  var state = { projects: [], busy: false, seq: 0 };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function tick() { return new Promise(function (r) { setTimeout(r, 30); }); }
+  function sanitizeName(name) {
+    var s = String(name || 'project').replace(/[\\/:*?"<>|]+/g, '_').replace(/^\.+$/, '');
+    return s || 'project';
+  }
+  function uniqueName(name) {
+    var base = sanitizeName(name);
+    var used = {};
+    for (var i = 0; i < state.projects.length; i++) used[state.projects[i].name] = true;
+    if (!used[base]) return base;
+    var n = 2;
+    while (used[base + '_' + n]) n++;
+    return base + '_' + n;
+  }
+
+  function applyLang() {
+    document.documentElement.lang = T.htmlLang;
+    $('title').textContent = T.title;
+    $('subtitle').textContent = T.subtitle;
+    $('s1t').textContent = T.s1t; $('s1d').textContent = T.s1d;
+    $('s2t').textContent = T.s2t; $('s2d').textContent = T.s2d;
+    $('s3t').textContent = T.s3t; $('s3d').textContent = T.s3d;
+    $('dropTitle').textContent = T.dropTitle;
+    $('dropHint').textContent = T.dropHint;
+    $('langBtn').textContent = lang === 'zh' ? 'English' : '中文';
+    $('notes').innerHTML = '<b>' + esc(T.notesTitle) + '</b><ul>'
+      + '<li>' + esc(T.note1) + '</li><li>' + esc(T.note2) + '</li><li>' + esc(T.note3) + '</li>'
+      + '<li>' + esc(T.note4) + '</li><li>' + esc(T.note5) + '</li></ul>';
+    $('footerText').textContent = T.footer;
+    render();
+  }
+
+  function statusText(p) {
+    if (p.status === 'converting') return T.statusConverting;
+    if (p.status === 'done') return T.statusDone;
+    if (p.status === 'partial') return T.statusPartial;
+    if (p.status === 'error') return T.statusError;
+    return T.statusIdle;
+  }
+
+  function render() {
+    var list = $('list');
+    if (!state.projects.length) {
+      list.innerHTML = '<div class="empty">' + esc(T.empty) + '</div>';
+    } else {
+      var html = '';
+      for (var i = 0; i < state.projects.length; i++) {
+        var p = state.projects[i];
+        var r = p.result;
+        html += '<div class="project" data-id="' + p.id + '">';
+        html += '<div class="meta"><div class="name">' + esc(p.displayName)
+          + '<span class="badge ' + esc(p.status) + '">' + esc(statusText(p)) + '</span></div>';
+        html += '<div class="files">' + esc(T.files(p.files.length));
+        if (r) {
+          if (r.warningCount) html += ' · ' + esc(T.warnings(r.warningCount));
+          if (r.failures && r.failures.length) html += ' · ' + esc(T.failedPcbs(r.failures.length));
+        }
+        html += '</div>';
+        if (p.error) {
+          html += '<details open><summary>' + esc(T.logs) + '</summary><pre class="log">' + esc(p.error) + '</pre></details>';
+        } else if (r && ((r.logs && r.logs.length) || (r.warnings && r.warnings.length))) {
+          var text = (r.warnings || []).map(function (w) { return 'warn: ' + w; }).concat(r.logs || []).join('\n');
+          html += '<details><summary>' + esc(T.logs) + '</summary><pre class="log">' + esc(text) + '</pre></details>';
+        }
+        html += '</div><div class="actions">';
+        if (r) html += '<button class="ghost" data-act="download" data-id="' + p.id + '">' + esc(T.download) + '</button>';
+        if (!state.busy) html += '<button class="linkbtn" data-act="remove" data-id="' + p.id + '">' + esc(T.remove) + '</button>';
+        html += '</div></div>';
+      }
+      list.innerHTML = html;
+    }
+    $('convertBtn').textContent = T.convert;
+    $('convertBtn').disabled = state.busy || !state.projects.length;
+    $('downloadAllBtn').textContent = T.downloadAll;
+    $('downloadAllBtn').disabled = state.busy || !state.projects.some(function (p) { return !!p.result; });
+    $('clearBtn').textContent = T.clear;
+    $('clearBtn').disabled = state.busy || !state.projects.length;
+  }
+
+  function addProject(name, files) {
+    if (!files.length) { alert(T.needFiles); return; }
+    state.projects.push({
+      id: 'p' + (++state.seq),
+      name: uniqueName(name),
+      displayName: name,
+      files: files,
+      status: 'idle',
+      result: null,
+      error: null
+    });
+    render();
+  }
+
+  // ---- input (folder picker) ----
+  $('picker').addEventListener('change', async function (ev) {
+    if (state.busy) { ev.target.value = ''; return; }
+    var groups = new Map();
+    var list = ev.target.files || [];
+    for (var i = 0; i < list.length; i++) {
+      var file = list[i];
+      var rel = file.webkitRelativePath || file.name;
+      var parts = rel.split('/');
+      var root = parts.length > 1 ? parts.shift() : 'project';
+      if (!RELEVANT.test(file.name)) continue;
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push({ file: file, path: parts.join('/') });
+    }
+    for (var entry of groups) {
+      var files = [];
+      for (var e of entry[1]) files.push({ path: e.path, data: new Uint8Array(await e.file.arrayBuffer()) });
+      addProject(entry[0], files);
+    }
+    ev.target.value = '';
+  });
+
+  // ---- drag & drop (multiple folders) ----
+  var drop = $('drop');
+  var picker = $('picker');
+  drop.addEventListener('click', function (e) {
+    if (e.target === picker) return;
+    if (!state.busy) picker.click();
+  });
+  picker.addEventListener('click', function (e) { e.stopPropagation(); });
+  drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', function () { drop.classList.remove('over'); });
+  drop.addEventListener('drop', async function (e) {
+    e.preventDefault();
+    drop.classList.remove('over');
+    if (state.busy) return;
+    var items = e.dataTransfer && e.dataTransfer.items ? Array.prototype.slice.call(e.dataTransfer.items) : [];
+    var entries = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+      if (entry) entries.push(entry);
+    }
+    for (var j = 0; j < entries.length; j++) {
+      var en = entries[j];
+      if (!en.isDirectory) continue;
+      var files = [];
+      await walkEntry(en, '', files);
+      addProject(en.name, files);
+    }
+  });
+
+  async function walkEntry(entry, rel, out) {
+    if (entry.isFile) {
+      var file = await new Promise(function (res, rej) { entry.file(res, rej); });
+      if (RELEVANT.test(file.name)) out.push({ path: rel + file.name, data: new Uint8Array(await file.arrayBuffer()) });
+    } else if (entry.isDirectory) {
+      var reader = entry.createReader();
+      while (true) {
+        var batch = await new Promise(function (res, rej) { reader.readEntries(res, rej); });
+        if (!batch.length) break;
+        for (var i = 0; i < batch.length; i++) await walkEntry(batch[i], rel + entry.name + '/', out);
+      }
+    }
+  }
+
+  // ---- actions ----
+  $('convertBtn').addEventListener('click', async function () {
+    if (state.busy) return;
+    state.busy = true;
+    render();
+    for (var i = 0; i < state.projects.length; i++) {
+      var p = state.projects[i];
+      if (p.status === 'done' || p.status === 'partial') continue;
+      p.status = 'converting'; p.error = null; p.result = null;
+      render();
+      await tick();
+      try {
+        p.result = await api.convertProjectFiles({ name: p.name, files: p.files, pourFineness: 8 });
+        p.status = p.result.failures && p.result.failures.length ? 'partial' : 'done';
+      } catch (err) {
+        p.status = 'error';
+        p.error = (err && (err.stack || err.message)) || String(err);
+      }
+      render();
+      await tick();
+    }
+    state.busy = false;
+    render();
+  });
+
+  $('clearBtn').addEventListener('click', function () {
+    if (state.busy) return;
+    state.projects = [];
+    render();
+  });
+
+  $('downloadAllBtn').addEventListener('click', function () {
+    var results = state.projects.map(function (p) { return p.result; }).filter(Boolean);
+    if (!results.length) return;
+    var files = [];
+    for (var i = 0; i < results.length; i++) {
+      for (var j = 0; j < results[i].files.length; j++) files.push(results[i].files[j]);
+    }
+    files.push({ name: 'README.txt', data: 'Converted by kicad-to-eprj3 v' + VERSION + '. Unzip, then open <project>/<project>.eprj3 in EasyEDA Pro.' });
+    download(api.zipStore(files), 'kicad-eprj3-projects.zip');
+  });
+
+  $('list').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var p = null;
+    for (var i = 0; i < state.projects.length; i++) if (state.projects[i].id === id) p = state.projects[i];
+    if (!p) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'remove') {
+      state.projects = state.projects.filter(function (x) { return x !== p; });
+      render();
+    } else if (act === 'download' && p.result) {
+      download(api.zipProject(p.result), p.name + '.eprj3.zip');
+    }
+  });
+
+  function download(bytes, filename) {
+    var blob = new Blob([bytes], { type: 'application/zip' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+  }
+
+  $('langBtn').addEventListener('click', function () {
+    lang = lang === 'zh' ? 'en' : 'zh';
+    storageSet('k2e-lang', lang);
+    T = I18N[lang];
+    applyLang();
+  });
+
+  applyLang();
+})();
+</script>
+</body>
+</html>

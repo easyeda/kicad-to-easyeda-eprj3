@@ -7,3 +7,5 @@ example/kicad/kicad-project/logs/
 .history
 # 临时脚本与产物
 tmp/
+# 构建产物（通过 npm run build / GitHub Actions 生成）
+dist/

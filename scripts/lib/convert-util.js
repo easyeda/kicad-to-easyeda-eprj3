@@ -43,12 +43,20 @@ let ggeCounter = 0;
 function nextGge() { return ++ggeCounter; }
 
 let warnCounter = 0;
+// Optional sink for non-CLI hosts (the browser build shows warnings in the
+// page instead of the developer console).
+let warnSink = null;
+function setWarnSink(fn) { warnSink = fn; }
+function resetWarnings() { warnCounter = 0; }
 function warn(msg) {
-  if (++warnCounter <= 30) console.warn(`  warn: ${msg}`);
+  warnCounter++;
+  if (warnSink) { warnSink(msg); return; }
+  if (warnCounter <= 30) console.warn(`  warn: ${msg}`);
 }
 function getWarnCount() { return warnCounter; }
 
 module.exports = {
   toMil, toSch, r2, PAGE_HEIGHT_UNITS, PAPER_SIZE_MM, MAGIC_PART_ID,
-  docHead, metaRec, nextGge, warn, getWarnCount
+  docHead, metaRec, nextGge, warn, getWarnCount,
+  setWarnSink, resetWarnings
 };
