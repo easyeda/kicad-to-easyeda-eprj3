@@ -115,6 +115,7 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | 层映射 | `F.Cu=1`、`B.Cu=2`、`F.SilkS=3`、`B.SilkS=4`、`F.Mask=5`、`Edge.Cuts=11`、`In{n}.Cu=14+n`…；PCB 文档写入官方 60 层表，并按 KiCad 的层栈启用实际使用的内层（`use/show`），避免内层走线与覆铜丢失 |
 
 - 单位换算：KiCad mm → eprj3 mil（×39.3700787）；坐标轴翻转：KiCad Y 向下 → eprj3 Y 向上；旋转角 (360−deg)%360
+- 底层元件的 FOOTPRINT 文档按顶层规范存储（F/B 铜层与丝印层互换、封装局部 Y 镜像）；客户端放置底层 COMPONENT 时会镜像回来，因此焊盘落在正确的层，非对称封装内的焊盘坐标也不会错位
 - uuid 关联（官方约定）：`.esch2` 页面 / `.epcb2` / `.ecfg` 的 `DOCHEAD.uuid` 分别等于索引中 `sheets` / `pcbs` / `schematics` 的 uuid
 - 同时生成 `sch/<名称>/<名称>.ecfg`（设计规则骨架）与 `.evar`（装配变量，空）
 - **不迁移**：3D 模型、网络类、SPICE 模型、自定义规则；无法翻译的元素会跳过并告警
@@ -153,7 +154,7 @@ kicad-to-easyeda-eprj3/
 │   ├── easyeda/              ← 嘉立创EDA专业版参考库包 easyeda-pro-libs.elibz2
 │   └── kicad/                ← 示例 KiCad 工程
 └── test/
-    ├── smoke.js              ← 端到端冒烟测试（161 项断言）
+    ├── smoke.js              ← 端到端冒烟测试（165 项断言）
     ├── compare/              ← KiCad ↔ eprj3 转换对比（网表/BOM/PCB 图元/层栈/飞线）
     └── validate-format.js    ← 用官方 JSON Schemas 校验生成记录的格式验证器
 ```

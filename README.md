@@ -115,6 +115,7 @@ Output strictly follows the official format documentation from [easyeda-pro-form
 | Layer mapping | `F.Cu=1`, `B.Cu=2`, `F.SilkS=3`, `B.SilkS=4`, `F.Mask=5`, `Edge.Cuts=11`, `In{n}.Cu=14+n`…; the PCB doc carries the official 60-layer table and enables the inner layers the KiCad stack actually uses (`use/show`), so their tracks and pours are not dropped |
 
 - Unit conversion: KiCad mm → eprj3 mil (×39.3700787); axis flip: KiCad Y-down → eprj3 Y-up; rotation (360−deg)%360
+- FOOTPRINT documents for bottom-side components are stored top-canonical (F/B copper/silk layers swapped, footprint-local Y mirrored); the client mirrors the document when placing the COMPONENT, so pads land on the correct side and asymmetric pad coordinates are not permuted
 - uuid linkage (official convention): the `DOCHEAD.uuid` of the `.esch2` page / `.epcb2` / `.ecfg` equals the `sheets` / `pcbs` / `schematics` uuid in the index respectively
 - Also generates `sch/<name>/<name>.ecfg` (design-rules skeleton) and `.evar` (assembly variants, empty)
 - **Not migrated**: 3D models, net classes, SPICE models, custom rules; elements that cannot be translated are skipped with a warning
@@ -153,7 +154,7 @@ kicad-to-easyeda-eprj3/
 │   ├── easyeda/              ← Reference EasyEDA Pro library package easyeda-pro-libs.elibz2
 │   └── kicad/                ← Sample KiCad project
 └── test/
-    ├── smoke.js              ← End-to-end smoke suite (161 assertions)
+    ├── smoke.js              ← End-to-end smoke suite (165 assertions)
     ├── compare/              ← KiCad ↔ eprj3 comparison (netlist/BOM/PCB primitives/stackup/ratlines)
     └── validate-format.js    ← Format validator checking generated records against the official JSON Schemas
 ```
