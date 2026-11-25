@@ -266,7 +266,7 @@
         html += '<div class="project" data-id="' + p.id + '">';
         html += '<div class="meta"><div class="name">' + esc(p.displayName)
           + '<span class="badge ' + esc(p.status) + '">' + esc(statusText(p)) + '</span></div>';
-        html += '<div class="files">' + esc(T.files(p.files.length));
+        html += '<div class="files">' + esc(T.files(p.fileCount != null ? p.fileCount : p.files.length));
         if (r) {
           if (r.warningCount) html += ' · ' + esc(T.warnings(r.warningCount));
           if (r.failures && r.failures.length) html += ' · ' + esc(T.failedPcbs(r.failures.length));
@@ -300,6 +300,7 @@
       name: uniqueName(name),
       displayName: name,
       files: files,
+      fileCount: files.length,
       status: 'idle',
       result: null,
       error: null
@@ -387,6 +388,7 @@
       try {
         p.result = await api.convertProjectFiles({ name: p.name, files: p.files, pourFineness: 8 });
         p.status = p.result.failures && p.result.failures.length ? 'partial' : 'done';
+        p.files = []; // free the raw uploads; the result is self-contained
       } catch (err) {
         p.status = 'error';
         p.error = (err && (err.stack || err.message)) || String(err);
