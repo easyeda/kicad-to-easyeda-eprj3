@@ -141,6 +141,10 @@ kicad-to-easyeda-eprj3/
 │   └── lib/
 │       ├── kicad.js          ← KiCad S-expression parser
 │       ├── kicad-to-eprj3.js ← Symbols/footprints → eprj3 records
+│       ├── schematic-convert.js ← Schematic page conversion (symbols/net flags/net ports/hierarchy/frame)
+│       ├── pcb-convert.js    ← PCB conversion (tracks/vias/footprints/pours/stackup/design rules)
+│       ├── convert-util.js   ← Shared conversion constants and helpers
+│       ├── frame-template.js ← A4 drawing-sheet template instantiation
 │       ├── eprj3.js          ← eprj3 read/write core (from easyeda-eprj3-skill, corrected against the official example)
 │       ├── elibz2.js         ← .elibz2 package assembly (device2.json + .elibu)
 │       ├── zip.js            ← Dependency-free zip read/write (zlib deflate/store)
@@ -149,7 +153,8 @@ kicad-to-easyeda-eprj3/
 │   ├── easyeda/              ← Reference EasyEDA Pro library package easyeda-pro-libs.elibz2
 │   └── kicad/                ← Sample KiCad project
 └── test/
-    ├── smoke.js              ← End-to-end smoke suite (68 assertions)
+    ├── smoke.js              ← End-to-end smoke suite (161 assertions)
+    ├── compare/              ← KiCad ↔ eprj3 comparison (netlist/BOM/PCB primitives/stackup/ratlines)
     └── validate-format.js    ← Format validator checking generated records against the official JSON Schemas
 ```
 

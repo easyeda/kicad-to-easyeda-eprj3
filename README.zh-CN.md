@@ -141,6 +141,10 @@ kicad-to-easyeda-eprj3/
 │   └── lib/
 │       ├── kicad.js          ← KiCad S-expression 解析器
 │       ├── kicad-to-eprj3.js ← 符号/封装 → eprj3 记录
+│       ├── schematic-convert.js ← 原理图页转换（符号/电源标识/网络端口/层次块/图框）
+│       ├── pcb-convert.js    ← PCB 转换（走线/过孔/封装/覆铜/层栈/设计规则）
+│       ├── convert-util.js   ← 转换共享常量与小工具
+│       ├── frame-template.js ← A4 图框模板实例化
 │       ├── eprj3.js          ← eprj3 读写核心（源自 easyeda-eprj3-skill，已按官方示例修正）
 │       ├── elibz2.js         ← .elibz2 库包组装（device2.json + .elibu）
 │       ├── zip.js            ← 零依赖 zip 读写（zlib deflate/store）
@@ -149,7 +153,8 @@ kicad-to-easyeda-eprj3/
 │   ├── easyeda/              ← 嘉立创EDA专业版参考库包 easyeda-pro-libs.elibz2
 │   └── kicad/                ← 示例 KiCad 工程
 └── test/
-    ├── smoke.js              ← 端到端冒烟测试（68 项断言）
+    ├── smoke.js              ← 端到端冒烟测试（161 项断言）
+    ├── compare/              ← KiCad ↔ eprj3 转换对比（网表/BOM/PCB 图元/层栈/飞线）
     └── validate-format.js    ← 用官方 JSON Schemas 校验生成记录的格式验证器
 ```
 

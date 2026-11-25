@@ -436,9 +436,26 @@ function parseFootprintFile(path) {
   return fp;
 }
 
+// (at x y [angle]) → [x, y, angle]; missing node → [0, 0, 0].
+function findAtXY(node) {
+  for (const it of node.slice(1)) {
+    if (Array.isArray(it) && it[0].v === 'at') return [parseFloat(it[1].v), parseFloat(it[2].v), parseFloat(it[3]?.v || 0)];
+  }
+  return [0, 0, 0];
+}
+
+// First bare quoted-string argument (token t === 'str').
+function findValue(node) {
+  for (const it of node.slice(1)) {
+    if (it && typeof it === 'object' && it.t === 'str') return it.v;
+  }
+  return '';
+}
+
 module.exports = {
   parse, parseSymbolFile, parseFootprintFile, tokenize, nodeSymbol,
   extractPts, extractArc, extractXY, strokeInfo, fillType,
   findSub, findSubNode, findChildValue, findFlags, collectProperties,
+  findAtXY, findValue,
   strokeWidthOf, extractPads, extractFpShapes, extractFpTexts, extractFootprintNode
 };
