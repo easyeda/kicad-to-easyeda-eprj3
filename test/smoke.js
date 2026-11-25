@@ -124,6 +124,12 @@ const kicadPcbSample = `(kicad_pcb (version 20221018) (generator pcbnew)
     (fp_line (start -1.5 -0.8) (end 1.5 -0.8) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
     (fp_arc (start -1 -1) (mid 0 0) (end 1 -1) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))
   )
+  (footprint "C_BACK" (layer "B.Cu") (at 20 10 0)
+    (property "Reference" "C9" (at 20 9 0) (layer "B.SilkS"))
+    (pad "14" smd rect (at -2.25 4.1625 0) (size 0.3 1.475) (layers "B.Cu" "B.Paste" "B.Mask") (net 1 "GND"))
+    (pad "47" smd rect (at -2.25 -4.1625 0) (size 0.3 1.475) (layers "B.Cu" "B.Paste" "B.Mask") (net 2 "VCC"))
+    (fp_line (start -1 0) (end 1 0) (stroke (width 0.1) (type solid)) (layer "B.SilkS"))
+  )
 )`;
 
 const kicadFpSample = `(footprint "R_0805" (layer "F.Cu")
@@ -291,7 +297,7 @@ function main() {
 
     const fpDocs = pcbDocs.filter(d => d.head.body.docType === 'FOOTPRINT');
     const pcbDevDocs = pcbDocs.filter(d => d.head.body.docType === 'DEVICE');
-    assert(fpDocs.length === 1 && pcbDevDocs.length === 1, '.epcb2 embeds FOOTPRINT and DEVICE docs');
+    assert(fpDocs.length === 2 && pcbDevDocs.length === 2, '.epcb2 embeds FOOTPRINT and DEVICE docs');
     assert(convPcb.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
     const fpDoc = fpDocs[0];
     assert(!!fpDoc && !fpDoc.records.some(r => r.type === 'ARC'),
@@ -300,6 +306,30 @@ function main() {
     assert(!!fpArcPoly && fpArcPoly.body.path[2] === 'ARC' && fpArcPoly.body.layerId === 3
       && Math.abs(fpArcPoly.body.path[3]) > 0 && Math.abs(fpArcPoly.body.path[3]) < 360,
       'fp_arc becomes a POLY with an ARC path and a valid sweep angle', fpArcPoly && JSON.stringify(fpArcPoly.body.path));
+
+    // A footprint on B.Cu is stored top-canonical (layers swapped + local Y
+    // mirrored); the client mirrors it back when placing the bottom COMPONENT.
+    // Without this every bottom SMD pad lands on F.Cu and asymmetric pad
+    // positions are permuted (pad 14 ↔ 47), producing airwires.
+    const backFpDoc = fpDocs.find(d => {
+      const m = d.records.find(r => r.type === 'META');
+      return m && m.body.title === 'C_BACK';
+    });
+    const backPads = backFpDoc ? backFpDoc.records.filter(r => r.type === 'PAD') : [];
+    const bp14 = backPads.find(p => p.body.num === '14');
+    const bp47 = backPads.find(p => p.body.num === '47');
+    assert(backPads.length === 2 && backPads.every(p => p.body.layerId === 1),
+      'bottom footprint pads are stored on the top layer (client mirrors them)',
+      JSON.stringify(backPads.map(p => p.body.layerId)));
+    assert(bp14 && Math.abs(bp14.body.centerY - kicadToEprj3(4.1625)) < 0.01
+      && bp47 && Math.abs(bp47.body.centerY + kicadToEprj3(4.1625)) < 0.01,
+      'bottom footprint pad geometry is mirrored across the local Y axis',
+      JSON.stringify({ y14: bp14 && bp14.body.centerY, y47: bp47 && bp47.body.centerY }));
+    const backSilk = backFpDoc && backFpDoc.records.find(r => r.type === 'POLY' && r.body.layerId !== 13);
+    assert(!!backSilk && backSilk.body.layerId === 3,
+      'bottom footprint silkscreen is stored on the top silk layer');
+    const backComp = pcbDoc.records.find(r => r.type === 'COMPONENT' && r.body.layerId === 2);
+    assert(!!backComp, 'bottom footprint placement references the bottom copper layer');
     const pcbComp = pcbDoc.records.find(r => r.type === 'COMPONENT');
     assert(pcbComp && pcbComp.body.layerId === 1, 'PCB COMPONENT placements reference a copper layer');
     assert(pcbComp && pcbComp.body.angle === 90,

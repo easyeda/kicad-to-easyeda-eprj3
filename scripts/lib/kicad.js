@@ -320,7 +320,13 @@ function extractPads(node) {
         pad.drill = nums[0];
         if (isOval && nums[1]) pad.drillOval = nums[1];
       }
-      else if (sh === 'net') pad.netName = sub[2]?.v || '';
+      else if (sh === 'net') {
+        // KiCad 8+ can write (net "NAME") without the numeric index.
+        const a = sub[1]?.v, b = sub[2]?.v;
+        if (b != null) pad.netName = b;
+        else if (a != null && !/^\d+$/.test(a)) pad.netName = a;
+        else pad.netName = '';
+      }
       else if (sh === 'primitives') {
         pad.primitives = sub.slice(1).filter(Array.isArray).map(extractPadPrimitive).filter(Boolean);
       }
@@ -423,7 +429,12 @@ function parseFootprintFile(path) {
             else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
             else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
             else if (sh === 'drill') pad.drill = sub[1]?.v;
-            else if (sh === 'net') { pad.netNum = sub[1]?.v; pad.netName = sub[2]?.v || ''; }
+            else if (sh === 'net') {
+              const a = sub[1]?.v, b = sub[2]?.v;
+              if (b != null) { pad.netNum = a; pad.netName = b; }
+              else if (a != null && !/^\d+$/.test(a)) { pad.netName = a; }
+              else { pad.netNum = a; pad.netName = ''; }
+            }
           }
           fp.pads.push(pad);
         } else if (h === 'fp_line' || h === 'fp_rect' || h === 'fp_circle' || h === 'fp_arc') {

@@ -370,12 +370,18 @@ function buildSymbolRecords(kicadSym, opts = {}) {
 
 const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'RECT', rect: 'RECT', custom: 'RECT', trapezoid: 'RECT' };
 
-function footprintPadLayerId(pad) {
+// FOOTPRINT documents are stored in top orientation: the client mirrors the
+// whole footprint (geometry and layers) when a COMPONENT is placed on the
+// bottom. A KiCad footprint instance on B.Cu therefore has its pad layers
+// swapped before writing the doc — keeping B.Cu in the doc made the client's
+// mirror put every bottom SMD pad back on F.Cu (unconnected: airwires).
+function footprintPadLayerId(pad, isBack = false) {
   const layers = pad.layers || [];
-  const isBack = layers.some(l => /^B\./.test(l));
+  const onBack = layers.some(l => /^B\./.test(l));
   const thru = (pad.type || '').includes('thru_hole');
   if (thru) return 12; // MULTI
-  return isBack ? 2 : 1;
+  if (isBack) return onBack ? 1 : 2;
+  return onBack ? 2 : 1;
 }
 
 function footprintPadHole(pad) {
@@ -399,7 +405,7 @@ function footprintPadRecord(pad, opts = {}) {
   return {
     head: { type: 'PAD', ticket: opts.ticket, id: opts.id },
     body: {
-      groupId: 0, netName: pad.netName || '', layerId: footprintPadLayerId(pad), num: pad.number || '',
+      groupId: 0, netName: pad.netName || '', layerId: footprintPadLayerId(pad, opts.isBack), num: pad.number || '',
       centerX: kicadToEprj3(parseFloat(x)), centerY: flipY(parseFloat(y)),
       padAngle: ((parseFloat(pad.angle) || 0) % 360 + 360) % 360, hole: footprintPadHole(pad),
       defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: 0 },
@@ -432,12 +438,14 @@ function padLocalTransform(pad) {
   };
 }
 
-function collectCustomPadShapes(pads) {
+function collectCustomPadShapes(pads, isBack = false) {
   const out = [];
   for (const pad of pads || []) {
     if (!pad.primitives || !pad.primitives.length) continue;
     const T = padLocalTransform(pad);
-    const layerId = (pad.layers || []).some(l => /^B\./.test(l)) ? 2 : 1;
+    // pad primitives are copper; same top-canonical rule as the anchor pad
+    const onBack = (pad.layers || []).some(l => /^B\./.test(l));
+    const layerId = isBack ? (onBack ? 1 : 2) : (onBack ? 2 : 1);
     for (const p of pad.primitives) {
       if (p.kind === 'line') {
         const a = T(p.x1, p.y1), b = T(p.x2, p.y2);
@@ -462,7 +470,15 @@ function buildFootprintRecords(kicadFp, opts = {}) {
   const records = [];
   const padIds = [];
   let ticket = 1;
-  const customShapes = collectCustomPadShapes(kicadFp.pads);
+  // pcb-convert passes the side on the footprint object itself; elibz2 uses opts.
+  const isBack = !!(opts.isBack || kicadFp.isBack);
+  // The doc is top-canonical; a source footprint on B.Cu has every F/B layer
+  // swapped below before the client places (and mirrors) it.
+  const silkLayerId = lname => {
+    const back = /^B\./.test(lname);
+    return (isBack ? !back : back) ? 4 : 3;
+  };
+  const customShapes = collectCustomPadShapes(kicadFp.pads, isBack);
 
   // BBOX from pads and silk shapes (mil, Y-up)
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -517,7 +533,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     ticket++;
     const lname = sh.layer || 'F.SilkS';
     // Fab/Courtyard/annotation graphics land on the Document layer (13)
-    const layerId = /SilkS$/.test(lname) ? (/^B\./.test(lname) ? 4 : 3) : 13;
+    const layerId = /SilkS$/.test(lname) ? silkLayerId(lname) : 13;
     const width = Math.max(1, Math.round(kicadToEprj3(parseFloat(sh.width) || 0.15)));
     if (sh.kind === 'fp_line') {
       records.push({
@@ -651,7 +667,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     ticket++;
     const padId = 'e' + randId();
     padIds.push({ num: pad.number || '', id: padId });
-    records.push(footprintPadRecord(pad, { ticket, id: padId, zIndex: ticket }));
+    records.push(footprintPadRecord(pad, { ticket, id: padId, zIndex: ticket, isBack }));
   }
 
   // Library-style ATTRs (official footprint docs carry Footprint/Designator placeholders)

@@ -82,12 +82,13 @@ function convertPcb(srcFile, dst, pcb, opts = {}) {
     // edits (e.g. two Connect:1pin footprints with different custom pads), so
     // key the doc by name + geometry, not by name alone.
     const anonymized = { ...fpData, pads: fpData.pads.map(p => ({ ...p, netName: '' })) };
-    const key = name + '\u0000' + JSON.stringify({ pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value || '' });
+    const isBack = !!fpData.isBack;
+    const key = name + '\u0000' + (isBack ? 'B' : 'F') + '\u0000' + JSON.stringify({ pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value || '' });
     if (usedFps[key]) return usedFps[key];
     const docUuid = uuid(16);
     const devUuid = uuid(16);
     // Library docs carry no instance nets — nets are wired per placement via PAD_NET.
-    const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value });
+    const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value, isBack });
     libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...fpRecs);
     libDocs.push(docHead('DEVICE', devUuid), metaRec(name, { images: [], attributes: { Symbol: '', Footprint: docUuid } }));
     usedFps[key] = { docUuid, devUuid, pads };
@@ -446,8 +447,13 @@ function normNet(name) {
 }
 
 function netOf(node, netNames) {
-  const netArr = findSub(node, 'net');
-  return netArr ? (netNames[netArr[0]] || '') : '';
+  const a = findSub(node, 'net');
+  if (!a) return '';
+  // (net <num> "NAME") normally; KiCad 8+ may omit the number: (net "NAME").
+  let name = netNames[a[0]];
+  if (!name && a[1]) name = a[1];
+  if (!name && a[0] && !/^\d+$/.test(String(a[0]))) name = String(a[0]);
+  return normNet(name || '');
 }
 
 // Flat path without a leading instruction token → insert 'L' after the start
@@ -706,22 +712,45 @@ function toFillUnit(mm) {
   return mm / 0.254;
 }
 
+// Mirror a footprint-local geometry primitive across the X axis (y → -y) for
+// the top-canonical FOOTPRINT doc of a bottom-side instance.
+function mirrorShapeY(sh) {
+  for (const k of ['y1', 'y2', 'my', 'cy']) if (typeof sh[k] === 'number') sh[k] = -sh[k];
+  if (Array.isArray(sh.pts)) for (const p of sh.pts) p.y = -p.y;
+}
+function mirrorPrimitiveY(q) {
+  for (const k of ['y1', 'y2', 'my', 'cy']) if (typeof q[k] === 'number') q[k] = -q[k];
+  if (Array.isArray(q.pts)) for (const p of q.pts) p.y = -p.y;
+}
+
 function convertFootprint(node, ctx) {
   const { netNames, usedNets, ensureFootprintDoc, nextTicket, push, body } = ctx;
   const fpName = node[1]?.v || 'FP';
   const at = findSub(node, 'at');
   const layerArr = findSub(node, 'layer');
   const fpLayer = layerArr ? layerArr[0] : 'F.Cu';
+  const isBack = /B\./.test(fpLayer);
   const pads = extractPads(node);
   // KiCad board files store the pad angle in board space (library angle +
   // footprint rotation), while the FOOTPRINT doc is local to the footprint and
   // the COMPONENT rotation is applied on top. Subtract the footprint angle so
   // rotated footprints (e.g. J1 at 90°) are not rotated twice.
   const fpAngle = parseFloat(at && at[2]) || 0;
-  for (const p of pads) p.angle = ((p.angle - fpAngle) % 360 + 360) % 360;
+  for (const p of pads) p.angle = ((((isBack ? -1 : 1) * (p.angle - fpAngle)) % 360) + 360) % 360;
   const shapes = extractFpShapes(node);
+  // FOOTPRINT docs are top-canonical, so a source instance on B.Cu is mirrored
+  // across the local Y axis here; the client mirrors it back when placing the
+  // bottom-side COMPONENT. Without this the pad positions inside an asymmetric
+  // footprint are permuted (e.g. U1 pad 14 ↔ 47), splitting nets in the DRC.
+  if (isBack) {
+    for (const p of pads) {
+      if (p.at && p.at.length >= 2) p.at = [p.at[0], -parseFloat(p.at[1]), ...p.at.slice(2)];
+      for (const q of p.primitives || []) mirrorPrimitiveY(q);
+    }
+    for (const sh of shapes) mirrorShapeY(sh);
+  }
   const texts = extractFpTexts(node);
-  const lib = ensureFootprintDoc(fpName, { pads, shapes, value: texts.Value || '' });
+  const lib = ensureFootprintDoc(fpName, { pads, shapes, value: texts.Value || '', isBack });
   for (const p of pads) { const n = normNet(p.netName); if (n) usedNets.add(n); }
 
   const compId = randId();
