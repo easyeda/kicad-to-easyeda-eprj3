@@ -42,11 +42,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
+          # 404 when Pages is disabled for the repository (organization policy).
+          BUILD_TYPE=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq '.build_type' 2>/dev/null || true)
+          if [ -z "$BUILD_TYPE" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=GitHub Pages is disabled::Pages is disabled for this repository (organization policy). Deployment skipped; users can still download kicad-to-eprj3.html from the latest GitHub Release."
+          elif [ "$BUILD_TYPE" != "workflow" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Pages source is not GitHub Actions::Set Settings → Pages → Build and deployment → Source to 'GitHub Actions'. Deployment skipped (current source: ${BUILD_TYPE})."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Prepare site
