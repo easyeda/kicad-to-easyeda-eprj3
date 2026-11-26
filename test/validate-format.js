@@ -3,7 +3,7 @@
 /**
  * validate-format.js — Validate generated eprj3/esch2/epcb2/elibu records
  *                      against the official JSON schemas from
- *                      easyeda-pro-format-skill (https://github.com/easyeda/easyeda-pro-format-skill).
+ *                      easyeda-format-skill (https://github.com/easyeda/easyeda-format-skill).
  *
  * Usage:
  *   node test/validate-format.js <file-with-records> <sch|pcb> [more files...]
@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SKILL_DIR = process.env.EASYEDA_FORMAT_SKILL
-  || path.resolve(__dirname, '../../easyeda-pro-format-skill');
+  || path.resolve(__dirname, '../../easyeda-format-skill');
 let validateFormat;
 try {
   ({ validateFormat } = require(path.join(SKILL_DIR, 'validate.js')));

@@ -13,7 +13,7 @@
 
 ## 环境要求
 
-- Node.js ≥ 18，无任何 npm 依赖（仅命令行与构建需要；浏览器页面不需要）。
+- Node.js ≥ 18。项目**没有任何 npm 依赖**（运行时与开发依赖均为空），浏览器页面也不需要。
 
 ## 浏览器版（免安装）
 
@@ -204,8 +204,11 @@ kicad-to-easyeda-eprj3/
 ├── build/
 │   ├── bundle.js             ← 构建独立 JS、HTML 页面与 zip
 │   ├── version.js            ← 版本号变更（patch/minor/major/none）
+│   ├── check-licenses.js     ← 强制所有依赖为 MIT/Apache-2.0
+│   ├── licenses/             ← 随 zip 分发的 MIT 许可证全文
 │   ├── app.html              ← 浏览器页面模板
 │   └── artifact-readme.md    ← 随 zip 分发的中英文用户说明
+├── THIRD-PARTY.md            ← 第三方组件与许可证策略
 ├── .github/workflows/
 │   └── build-release.yml     ← 手动构建 → 版本变更 → 打标签 → 发布产物
 ├── example/
@@ -222,7 +225,7 @@ kicad-to-easyeda-eprj3/
 ## 测试
 
 ```bash
-npm test          # 冒烟 + hostpath + 独立包测试
+npm test          # 许可证检查 + 冒烟 + hostpath + 独立包 + 页面 UI 测试
 npm run build     # dist/kicad-to-eprj3-<版本号>.{js,zip} 与 kicad-to-eprj3.html
 ```
 
@@ -232,7 +235,7 @@ npm run build     # dist/kicad-to-eprj3-<版本号>.{js,zip} 与 kicad-to-eprj3.
 node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ```
 
-> 验证器依赖 [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
+> 校验器使用同级目录下 [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) 的 `validate.js`（也可通过 `EASYEDA_FORMAT_SKILL` 环境变量指定），不随仓库复制。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
 
 ## 相关项目
 
@@ -243,3 +246,5 @@ node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ## License
 
 [Apache-2.0](LICENSE)
+
+第三方组件均为 MIT 许可证（随源码修改的 `eprj3.js` / `utils.js` 核心）；详见 [THIRD-PARTY.md](THIRD-PARTY.md)。项目刻意不引入任何 npm 依赖——`npm run license:check`（已纳入 `npm test`）会强制任何依赖必须是 MIT 或 Apache-2.0。

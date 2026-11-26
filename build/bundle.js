@@ -189,6 +189,19 @@ const entries = [
 if (fs.existsSync(licenseFile)) {
   entries.push({ name: `kicad-to-eprj3-${VERSION}/LICENSE`, data: fs.readFileSync(licenseFile) });
 }
+const thirdParty = path.join(ROOT, 'THIRD-PARTY.md');
+if (fs.existsSync(thirdParty)) {
+  entries.push({ name: `kicad-to-eprj3-${VERSION}/THIRD-PARTY.md`, data: fs.readFileSync(thirdParty) });
+}
+const licensesDir = path.join(ROOT, 'build', 'licenses');
+if (fs.existsSync(licensesDir)) {
+  for (const f of fs.readdirSync(licensesDir).sort()) {
+    entries.push({
+      name: `kicad-to-eprj3-${VERSION}/LICENSES/${f}`,
+      data: fs.readFileSync(path.join(licensesDir, f))
+    });
+  }
+}
 fs.writeFileSync(zipFile, createZip(entries));
 
 const kb = n => `${(n / 1024).toFixed(1)} KB`;

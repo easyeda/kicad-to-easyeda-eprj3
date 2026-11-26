@@ -2,7 +2,7 @@
 
 // Convert KiCad library symbols / footprints into eprj3 records.
 // Payload shapes follow the official example project
-// (easyeda-pro-eprj3-format/example/eprj3-example) where available, else the
+// (easyeda-eprj3-format/example/eprj3-example) where available, else the
 // official format docs (easyeda-pro-file-format/cn/...).
 
 const { randId } = require('./eprj3');

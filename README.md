@@ -13,7 +13,7 @@ Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCa
 
 ## Requirements
 
-- Node.js ≥ 18, with no npm dependencies (only needed for the CLI/build; the browser page needs none).
+- Node.js ≥ 18. There are **no npm dependencies** (runtime or development); the browser page needs none either.
 
 ## Browser version (no installation)
 
@@ -204,8 +204,11 @@ kicad-to-easyeda-eprj3/
 ├── build/
 │   ├── bundle.js             ← Builds the standalone JS, HTML page and zip
 │   ├── version.js            ← Version bump (patch/minor/major/none)
+│   ├── check-licenses.js     ← Enforces MIT/Apache-2.0 for every dependency
+│   ├── licenses/             ← MIT license texts shipped in the zip
 │   ├── app.html              ← Browser page template
 │   └── artifact-readme.md    ← Bilingual end-user guide shipped in the zip
+├── THIRD-PARTY.md            ← Third-party components and license policy
 ├── .github/workflows/
 │   └── build-release.yml     ← Manual build → version bump → tag → release asset
 ├── example/
@@ -222,7 +225,7 @@ kicad-to-easyeda-eprj3/
 ## Testing
 
 ```bash
-npm test          # smoke + hostpath + standalone bundle tests
+npm test          # license check + smoke + hostpath + standalone bundle + UI tests
 npm run build     # dist/kicad-to-eprj3-<version>.{js,zip} + kicad-to-eprj3.html
 ```
 
@@ -232,7 +235,7 @@ Generated records can additionally be validated one by one against the official 
 node test/validate-format.js <generated .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ```
 
-> The validator uses `validate.js` from [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill), found in the sibling directory by default, or via the `EASYEDA_FORMAT_SKILL` environment variable. Note: the official Schemas slightly diverge from real app exports (e.g. `POUR.pourType`, PCB `ATTR.groupID`, the `DIMENSION` structure); the validator is calibrated to the real exported data.
+> The validator uses `validate.js` from [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill), located in the sibling directory (or via the `EASYEDA_FORMAT_SKILL` environment variable) when present; it is not vendored. Note: the official Schemas slightly diverge from real app exports (e.g. `POUR.pourType`, PCB `ATTR.groupID`, the `DIMENSION` structure); the validator is calibrated to the real exported data.
 
 ## Related Projects
 
@@ -243,3 +246,5 @@ node test/validate-format.js <generated .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ## License
 
 [Apache-2.0](LICENSE)
+
+Third-party components are all MIT-licensed (the vendored `eprj3.js` / `utils.js` core); see [THIRD-PARTY.md](THIRD-PARTY.md). The project deliberately avoids npm dependencies — `npm run license:check` (part of `npm test`) enforces that any dependency is MIT or Apache-2.0.
