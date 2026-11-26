@@ -1,0 +1,63 @@
+name: Deploy browser page to GitHub Pages
+
+# Builds the self-contained browser page and publishes it as the Pages site
+# root (index.html). Runs on every push to main — the page version comes from
+# package.json — and can be triggered manually.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build standalone page
+        run: node build/bundle.js
+
+      - name: Prepare site
+        shell: bash
+        run: |
+          mkdir -p _site
+          cp dist/kicad-to-eprj3.html _site/index.html
+          # Direct link to the standalone bundle, for users who want to embed it.
+          cp dist/kicad-to-eprj3-*.js _site/ 2>/dev/null || true
+          ls -la _site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # First run enables Pages automatically (repository must allow it).
+          enablement: true
+          token: ${{ github.token }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

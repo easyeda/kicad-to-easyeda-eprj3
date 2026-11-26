@@ -27,6 +27,12 @@ Choosing a folder uses the browser's File System Access API, so no “upload fil
 
 The zip also contains the standalone JS, this guide (bilingual) and the license.
 
+### Online (GitHub Pages)
+
+The page is also published as a single-page site: **https://easyeda.github.io/kicad-to-easyeda-eprj3/**
+
+`.github/workflows/pages.yml` builds `dist/kicad-to-eprj3.html` and deploys it as the Pages `index.html` on every push to `main` (or manually via *Actions → Deploy browser page to GitHub Pages → Run workflow*). In a fork, enable **Settings → Pages → Build and deployment → Source: GitHub Actions** once; the workflow can also try to enable it on the first run.
+
 ## Usage
 
 ### 1) KiCad project → eprj3 project (batch)
@@ -209,7 +215,8 @@ kicad-to-easyeda-eprj3/
 │   ├── app.html              ← Browser page template
 │   └── artifact-readme.md    ← Bilingual end-user guide shipped in the zip
 ├── .github/workflows/
-│   └── build-release.yml     ← Manual build → version bump → tag → release asset
+│   ├── build-release.yml     ← Manual build → version bump → tag → release asset
+│   └── pages.yml             ← Push to main → build the single-page site for GitHub Pages
 ├── example/
 │   ├── easyeda/              ← Reference EasyEDA Pro library package easyeda-pro-libs.elibz2
 │   └── kicad/                ← Sample KiCad project

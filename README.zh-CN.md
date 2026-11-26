@@ -27,6 +27,12 @@
 
 压缩包里同时包含独立 JS、本说明（中英文）与许可证。
 
+### 在线使用（GitHub Pages）
+
+页面同时部署为单页站点：**https://easyeda.github.io/kicad-to-easyeda-eprj3/**
+
+`.github/workflows/pages.yml` 会在每次推送到 `main` 时构建 `dist/kicad-to-eprj3.html` 并发布为 Pages 的 `index.html`（也可在 *Actions → Deploy browser page to GitHub Pages → Run workflow* 手动触发）。Fork 后首次使用需在 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**；工作流首次运行也会尝试自动启用。
+
 ## 用法
 
 ### 1) KiCad 工程 → eprj3 工程（批量）
@@ -209,7 +215,8 @@ kicad-to-easyeda-eprj3/
 │   ├── app.html              ← 浏览器页面模板
 │   └── artifact-readme.md    ← 随 zip 分发的中英文用户说明
 ├── .github/workflows/
-│   └── build-release.yml     ← 手动构建 → 版本变更 → 打标签 → 发布产物
+│   ├── build-release.yml     ← 手动构建 → 版本变更 → 打标签 → 发布产物
+│   └── pages.yml             ← 推送 main → 构建单页站点并部署到 GitHub Pages
 ├── example/
 │   ├── easyeda/              ← 嘉立创EDA专业版参考库包 easyeda-pro-libs.elibz2
 │   └── kicad/                ← 示例 KiCad 工程
