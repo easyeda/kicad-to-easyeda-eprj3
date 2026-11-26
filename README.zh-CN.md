@@ -208,7 +208,6 @@ kicad-to-easyeda-eprj3/
 │   ├── licenses/             ← 随 zip 分发的 MIT 许可证全文
 │   ├── app.html              ← 浏览器页面模板
 │   └── artifact-readme.md    ← 随 zip 分发的中英文用户说明
-├── THIRD-PARTY.md            ← 第三方组件与许可证策略
 ├── .github/workflows/
 │   └── build-release.yml     ← 手动构建 → 版本变更 → 打标签 → 发布产物
 ├── example/
@@ -247,4 +246,4 @@ node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 
 [Apache-2.0](LICENSE)
 
-第三方组件均为 MIT 许可证（随源码修改的 `eprj3.js` / `utils.js` 核心）；详见 [THIRD-PARTY.md](THIRD-PARTY.md)。项目刻意不引入任何 npm 依赖——`npm run license:check`（已纳入 `npm test`）会强制任何依赖必须是 MIT 或 Apache-2.0。
+第三方组件均为 MIT 许可证（随源码修改的 `eprj3.js` / `utils.js` 核心，许可证全文见 `build/licenses/`）。项目刻意不引入任何 npm 依赖——`npm run license:check`（已纳入 `npm test`）会强制任何依赖必须是 MIT 或 Apache-2.0。

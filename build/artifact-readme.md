@@ -15,7 +15,6 @@ Convert KiCad projects (`.kicad_sch` / `.kicad_pcb`) into EasyEDA Pro `.eprj3` p
 | `kicad-to-eprj3-__K2E_VERSION__.js` | 独立脚本：可在 Node.js 命令行使用，也可被其他网页引用 / Standalone script for the Node.js CLI or for embedding in a web page |
 | `README.md` | 本说明 / This guide |
 | `LICENSE` | Apache-2.0 许可证 / Apache-2.0 license |
-| `THIRD-PARTY.md` | 第三方组件与许可证说明 / Third-party components and licenses |
 | `LICENSES/` | 随包分发的 MIT 许可证全文 / MIT license texts for bundled code |
 
 ---

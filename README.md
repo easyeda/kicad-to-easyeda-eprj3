@@ -208,7 +208,6 @@ kicad-to-easyeda-eprj3/
 │   ├── licenses/             ← MIT license texts shipped in the zip
 │   ├── app.html              ← Browser page template
 │   └── artifact-readme.md    ← Bilingual end-user guide shipped in the zip
-├── THIRD-PARTY.md            ← Third-party components and license policy
 ├── .github/workflows/
 │   └── build-release.yml     ← Manual build → version bump → tag → release asset
 ├── example/
@@ -247,4 +246,4 @@ node test/validate-format.js <generated .esch2|.epcb2|.elibu> <sch|pcb|lib>
 
 [Apache-2.0](LICENSE)
 
-Third-party components are all MIT-licensed (the vendored `eprj3.js` / `utils.js` core); see [THIRD-PARTY.md](THIRD-PARTY.md). The project deliberately avoids npm dependencies — `npm run license:check` (part of `npm test`) enforces that any dependency is MIT or Apache-2.0.
+Third-party components are all MIT-licensed (the vendored `eprj3.js` / `utils.js` core; full text under `build/licenses/`). The project deliberately avoids npm dependencies — `npm run license:check` (part of `npm test`) enforces that any dependency is MIT or Apache-2.0.

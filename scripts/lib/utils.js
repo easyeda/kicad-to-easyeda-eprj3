@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Derived from easyeda-eprj3-skill (https://github.com/easyeda/easyeda-eprj3-skill).
-// See THIRD-PARTY.md for the full license text.
+// MIT license text: build/licenses/easyeda-eprj3-skill-LICENSE.txt
 'use strict';
 
 const fs = require('fs');
