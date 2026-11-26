@@ -33,6 +33,8 @@
 
 `.github/workflows/pages.yml` 会在每次推送到 `main` 时构建 `dist/kicad-to-eprj3.html` 并发布为 Pages 的 `index.html`（也可在 *Actions → Deploy browser page to GitHub Pages → Run workflow* 手动触发）。Fork 后首次使用需在 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**；工作流首次运行也会尝试自动启用。
 
+> 如果组织在仓库级别禁用了 GitHub Pages，工作流会检测到并**跳过部署**（只给出提示，不会报红）。同一个单文件也会作为附件上传到每个 GitHub Release——直接下载 **`kicad-to-eprj3.html`** 用浏览器打开即可，或把它放到任意静态文件服务器。使用时不需任何构建步骤。
+
 ## 用法
 
 ### 1) KiCad 工程 → eprj3 工程（批量）

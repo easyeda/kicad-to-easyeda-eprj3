@@ -3,6 +3,10 @@ name: Deploy browser page to GitHub Pages
 # Builds the self-contained browser page and publishes it as the Pages site
 # root (index.html). Runs on every push to main — the page version comes from
 # package.json — and can be triggered manually.
+#
+# Pages may be disabled for the repository (organization policy). In that case
+# the preflight check skips deployment with a notice instead of failing; the
+# page remains available as a Release asset (kicad-to-eprj3.html).
 on:
   push:
     branches: [main]
@@ -20,6 +24,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages: ${{ steps.check.outputs.enabled }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +36,21 @@ jobs:
       - name: Build standalone page
         run: node build/bundle.js
 
+      - name: Check GitHub Pages availability
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=GitHub Pages is disabled::Pages is disabled for this repository (organization policy). Deployment skipped; users can still download kicad-to-eprj3.html from the latest GitHub Release."
+          fi
+
       - name: Prepare site
+        if: steps.check.outputs.enabled == 'true'
         shell: bash
         run: |
           mkdir -p _site
@@ -40,19 +60,18 @@ jobs:
           ls -la _site
 
       - name: Configure Pages
+        if: steps.check.outputs.enabled == 'true'
         uses: actions/configure-pages@v5
-        with:
-          # First run enables Pages automatically (repository must allow it).
-          enablement: true
-          token: ${{ github.token }}
 
       - name: Upload Pages artifact
+        if: steps.check.outputs.enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
   deploy:
     needs: build
+    if: needs.build.outputs.pages == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

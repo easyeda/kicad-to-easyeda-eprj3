@@ -86,13 +86,20 @@ jobs:
         shell: bash
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          ZIP="dist/kicad-to-eprj3-${{ steps.version.outputs.version }}.zip"
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP="dist/kicad-to-eprj3-$VERSION.zip"
+          # Standalone HTML/JS are also attached directly: if GitHub Pages is
+          # disabled for the repository, users can download the single HTML
+          # file and open it locally.
+          HTML="dist/kicad-to-eprj3.html"
+          JS="dist/kicad-to-eprj3-$VERSION.js"
+          NOTES="Standalone build (no Node.js needed): open kicad-to-eprj3.html in a browser, or use the bundled JS with Node.js. See README.md inside the zip. Online single-page version: https://easyeda.github.io/kicad-to-easyeda-eprj3/ (if GitHub Pages is enabled)."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ZIP" --clobber
+            gh release upload "$TAG" "$ZIP" "$HTML" "$JS" --clobber
           else
-            gh release create "$TAG" "$ZIP" \
-              --title "kicad-to-eprj3 v${{ steps.version.outputs.version }}" \
-              --notes "Standalone build (no Node.js needed): open kicad-to-eprj3.html in a browser, or use the bundled JS with Node.js. See README.md inside the zip."
+            gh release create "$TAG" "$ZIP" "$HTML" "$JS" \
+              --title "kicad-to-eprj3 v$VERSION" \
+              --notes "$NOTES"
           fi
 
       - name: Upload workflow artifact

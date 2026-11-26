@@ -33,6 +33,8 @@ The page is also published as a single-page site: **https://easyeda.github.io/ki
 
 `.github/workflows/pages.yml` builds `dist/kicad-to-eprj3.html` and deploys it as the Pages `index.html` on every push to `main` (or manually via *Actions → Deploy browser page to GitHub Pages → Run workflow*). In a fork, enable **Settings → Pages → Build and deployment → Source: GitHub Actions** once; the workflow can also try to enable it on the first run.
 
+> If your organization disables GitHub Pages for the repository, the workflow detects it and skips deployment with a notice (no red build). The same single file is also attached to every GitHub Release — download **`kicad-to-eprj3.html`** and open it locally, or host it on any static file server. No build step is needed to use it.
+
 ## Usage
 
 ### 1) KiCad project → eprj3 project (batch)
