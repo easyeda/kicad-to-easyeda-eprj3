@@ -19,9 +19,11 @@
 
 从 GitHub **Releases** 页面下载 `kicad-to-eprj3-<版本号>.zip` 并解压，用最新版 Chrome/Edge 打开 `kicad-to-eprj3.html`：
 
-1. 添加一个或多个 KiCad 工程文件夹（点击选择或直接拖入页面）。
+1. 添加一个或多个 KiCad 工程文件夹：点击选择文件夹后会自动识别其中的多个工程，可勾选后一次添加；也支持一次拖入多个文件夹，并可重复添加。
 2. 点击「开始转换」——所有处理都在本机浏览器内完成，文件不会上传。
 3. 下载 `.eprj3.zip`，解压后用嘉立创EDA专业版打开 `<工程名>/<工程名>.eprj3`。
+
+选择文件夹使用浏览器的 File System Access 接口，不会再弹出“上传文件”确认框（Chrome/Edge）。
 
 压缩包里同时包含独立 JS、本说明（中英文）与许可证。
 
@@ -126,7 +128,7 @@ node dist/kicad-to-eprj3-<版本号>.js convert-lib <KiCad库目录> <输出.eli
 
 ## 转换覆盖范围（best-effort）
 
-输出严格对齐 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的官方格式文档（types / 字段定义 / JSON Schemas），并以真实导出数据校准 schema 与实际导出不一致之处；可另参考 [官方 eprj3 格式示例工程](https://github.com/easyeda/easyeda-pro-eprj3-format)：
+输出严格对齐 [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) 的官方格式文档（types / 字段定义 / JSON Schemas），并以真实导出数据校准 schema 与实际导出不一致之处；可另参考 [官方 eprj3 格式示例工程](https://github.com/easyeda/easyeda-eprj3-format)：
 
 | KiCad | eprj3 |
 | --- | --- |
@@ -212,6 +214,7 @@ kicad-to-easyeda-eprj3/
 └── test/
     ├── smoke.js              ← 端到端冒烟测试（165 项断言）
     ├── bundle.test.js        ← 独立包/浏览器 API/HTML 测试（23 项断言）
+    ├── ui.test.js            ← 浏览器页面文件夹扫描/多选/弹窗测试（11 项断言）
     ├── compare/              ← KiCad ↔ eprj3 转换对比（网表/BOM/PCB 图元/层栈/飞线）
     └── validate-format.js    ← 用官方 JSON Schemas 校验生成记录的格式验证器
 ```
@@ -229,13 +232,13 @@ npm run build     # dist/kicad-to-eprj3-<版本号>.{js,zip} 与 kicad-to-eprj3.
 node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ```
 
-> 验证器依赖 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
+> 验证器依赖 [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
 
 ## 相关项目
 
-- [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) — 嘉立创EDA Pro 文件格式技能包（types 索引、图元字段定义、JSON Schemas、validate.js），本仓库的格式权威参考
+- [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) — 嘉立创EDA Pro 文件格式技能包（types 索引、图元字段定义、JSON Schemas、validate.js），本仓库的格式权威参考
 - [easyeda-eprj3-skill](https://github.com/easyeda/easyeda-eprj3-skill) — 教 AI 编码助手从零生成 `.eprj3` 工程的技能包；本仓库的 `scripts/lib/eprj3.js` 与 `utils.js` 即来自该项目的核心库
-- [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format) — 官方 eprj3 格式示例工程
+- [easyeda-eprj3-format](https://github.com/easyeda/easyeda-eprj3-format) — 官方 eprj3 格式示例工程
 
 ## License
 

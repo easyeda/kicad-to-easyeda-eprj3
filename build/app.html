@@ -82,6 +82,21 @@
   .note { color: var(--muted); font-size: 13px; }
   .note ul { margin: 6px 0 0; padding-left: 18px; }
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
+  /* folder selection modal */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+  .modal[hidden] { display: none; }
+  .modal-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); width: min(560px, 100%); max-height: 86vh; display: flex; flex-direction: column; }
+  .modal-head { padding: 18px 20px 0; }
+  .modal-head h3 { margin: 0 0 4px; font-size: 17px; }
+  .modal-head p { margin: 0; color: var(--muted); font-size: 13px; }
+  .modal-list { padding: 12px 20px; overflow: auto; }
+  .modal-item { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .modal-item:first-child { border-top: none; }
+  .modal-item input { width: 16px; height: 16px; }
+  .modal-item .folder { font-weight: 600; }
+  .modal-item .tag { font-size: 11px; color: var(--accent); background: var(--accent-weak); border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .modal-actions .ghost:first-child { margin-right: auto; }
   @media (max-width: 700px) { .steps { grid-template-columns: 1fr; } .project { flex-wrap: wrap; } .project .actions { justify-content: flex-start; } }
 </style>
 </head>
@@ -122,6 +137,21 @@
   <footer><span id="footerText"></span></footer>
 </div>
 
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modalTitle"></h3>
+      <p id="modalHint"></p>
+    </div>
+    <div class="modal-list" id="modalList"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="modalToggle" type="button"></button>
+      <button class="ghost" id="modalCancel" type="button"></button>
+      <button class="primary" id="modalOk" type="button"></button>
+    </div>
+  </div>
+</div>
+
 <script>
 /*__K2E_BUNDLE__*/
 </script>
@@ -141,7 +171,7 @@
       s2t: '② 开始转换', s2d: '文件只在你的电脑上处理，不会上传',
       s3t: '③ 下载并打开', s3d: '解压后用嘉立创EDA专业版打开 .eprj3',
       dropTitle: '把 KiCad 工程文件夹拖到这里',
-      dropHint: '或点击选择文件夹（可多次添加；支持一次拖入多个文件夹）',
+      dropHint: '或点击选择文件夹；可一次拖入多个文件夹，也可重复添加',
       convert: '开始转换',
       downloadAll: '全部下载 (.zip)',
       clear: '清空列表',
@@ -155,14 +185,18 @@
       logs: '查看日志',
       failedPcbs: function (n) { return n + ' 块 PCB 转换失败'; },
       needFiles: '所选文件夹里没有 KiCad 工程文件（.kicad_sch / .kicad_pcb）。',
-      convertingNow: '正在转换：',
-      allDone: '全部转换完成。',
+      pickTitle: '选择要转换的工程',
+      pickHint: function (n) { return '已识别 ' + n + ' 个工程文件夹，可多选。'; },
+      pickRoot: '当前文件夹',
+      pickAll: '全选', pickNone: '全不选',
+      pickOk: function (n) { return '添加所选 (' + n + ')'; },
+      pickCancel: '取消',
+      reading: '正在读取文件…',
       notesTitle: '说明',
-      note1: '支持一次添加多个工程目录，也支持把多个文件夹一起拖进页面。',
+      note1: '点击选择文件夹时可自动识别其中的多个工程，勾选后一次添加；也支持一次拖入多个文件夹。',
       note2: '转换完全在浏览器本地完成，文件不会上传到任何服务器。',
       note3: '输出是 .eprj3 文件夹工程，已打包成 zip。解压后，用嘉立创EDA专业版“打开工程”选择 <工程名>/<工程名>.eprj3。',
-      note4: '工程目录里的 *-unroute.kicad_pcb（未布线副本）也会被转换，打开时选择你需要的 PCB 即可。',
-      note5: '建议使用最新版 Chrome 或 Edge 浏览器。',
+      note4: '选择文件夹不会出现“上传文件”确认框（使用 Chrome/Edge 的文件夹访问接口）；建议使用最新版 Chrome 或 Edge。',
       footer: 'kicad-to-eprj3 v' + VERSION + ' · 本地运行，不上传文件'
     },
     en: {
@@ -173,7 +207,7 @@
       s2t: '② Convert', s2d: 'Everything runs locally; files are never uploaded',
       s3t: '③ Download and open', s3d: 'Unzip, then open the .eprj3 in EasyEDA Pro',
       dropTitle: 'Drop KiCad project folders here',
-      dropHint: 'or click to choose a folder (add several; multiple folders can be dropped at once)',
+      dropHint: 'or click to choose a folder; drop several folders at once, or add folders repeatedly',
       convert: 'Convert',
       downloadAll: 'Download all (.zip)',
       clear: 'Clear list',
@@ -187,14 +221,18 @@
       logs: 'Show log',
       failedPcbs: function (n) { return n + ' PCB(s) failed'; },
       needFiles: 'No KiCad project files (.kicad_sch / .kicad_pcb) were found in the selected folder.',
-      convertingNow: 'Converting: ',
-      allDone: 'All projects converted.',
+      pickTitle: 'Choose projects to convert',
+      pickHint: function (n) { return n + ' project folder' + (n === 1 ? '' : 's') + ' found — select one or more.'; },
+      pickRoot: 'current folder',
+      pickAll: 'Select all', pickNone: 'Select none',
+      pickOk: function (n) { return 'Add selected (' + n + ')'; },
+      pickCancel: 'Cancel',
+      reading: 'Reading files…',
       notesTitle: 'Notes',
-      note1: 'Add several project folders at once, or drop multiple folders onto the page.',
+      note1: 'The picker detects multiple projects inside the chosen folder — tick the ones you need; multiple folders can also be dropped at once.',
       note2: 'Conversion runs entirely in your browser; files are never uploaded.',
       note3: 'The output is a .eprj3 folder project packed as a zip. Unzip it and use EasyEDA Pro “Open Project” to select <name>/<name>.eprj3.',
-      note4: '*-unroute.kicad_pcb files in the project folder are converted too; open the PCB you need.',
-      note5: 'A recent Chrome or Edge browser is recommended.',
+      note4: 'Choosing a folder does not trigger an “upload files” confirmation (Chrome/Edge folder access API). A recent Chrome or Edge is recommended.',
       footer: 'kicad-to-eprj3 v' + VERSION + ' · runs locally, no uploads'
     }
   };
@@ -206,7 +244,7 @@
     : ((navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
   var T = I18N[lang];
 
-  var state = { projects: [], busy: false, seq: 0 };
+  var state = { projects: [], busy: false, seq: 0, pending: null, adding: false };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -237,13 +275,14 @@
     $('s2t').textContent = T.s2t; $('s2d').textContent = T.s2d;
     $('s3t').textContent = T.s3t; $('s3d').textContent = T.s3d;
     $('dropTitle').textContent = T.dropTitle;
-    $('dropHint').textContent = T.dropHint;
+    $('dropHint').textContent = state.adding ? T.reading : T.dropHint;
     $('langBtn').textContent = lang === 'zh' ? 'English' : '中文';
     $('notes').innerHTML = '<b>' + esc(T.notesTitle) + '</b><ul>'
       + '<li>' + esc(T.note1) + '</li><li>' + esc(T.note2) + '</li><li>' + esc(T.note3) + '</li>'
-      + '<li>' + esc(T.note4) + '</li><li>' + esc(T.note5) + '</li></ul>';
+      + '<li>' + esc(T.note4) + '</li></ul>';
     $('footerText').textContent = T.footer;
     render();
+    renderModal();
   }
 
   function statusText(p) {
@@ -286,15 +325,15 @@
       list.innerHTML = html;
     }
     $('convertBtn').textContent = T.convert;
-    $('convertBtn').disabled = state.busy || !state.projects.length;
+    $('convertBtn').disabled = state.busy || state.adding || !state.projects.length;
     $('downloadAllBtn').textContent = T.downloadAll;
-    $('downloadAllBtn').disabled = state.busy || !state.projects.some(function (p) { return !!p.result; });
+    $('downloadAllBtn').disabled = state.busy || state.adding || !state.projects.some(function (p) { return !!p.result; });
     $('clearBtn').textContent = T.clear;
-    $('clearBtn').disabled = state.busy || !state.projects.length;
+    $('clearBtn').disabled = state.busy || state.adding || !state.projects.length;
   }
 
   function addProject(name, files) {
-    if (!files.length) { alert(T.needFiles); return; }
+    if (!files.length) return false;
     state.projects.push({
       id: 'p' + (++state.seq),
       name: uniqueName(name),
@@ -305,37 +344,231 @@
       result: null,
       error: null
     });
-    render();
+    return true;
   }
 
-  // ---- input (folder picker) ----
-  $('picker').addEventListener('change', async function (ev) {
-    if (state.busy) { ev.target.value = ''; return; }
+  // ---- folder pickers ------------------------------------------------------
+
+  function toFileEntries(files) {
+    return files.map(function (f) { return { path: f.name, file: f.file }; });
+  }
+
+  async function listHandle(handle) {
+    var files = [], dirs = [];
+    for await (var entry of handle.entries()) {
+      var name = entry[0], child = entry[1];
+      if (child.kind === 'file') {
+        if (RELEVANT.test(name)) files.push({ name: name, file: await child.getFile() });
+      } else {
+        dirs.push({ name: name, handle: child });
+      }
+    }
+    return { files: files, dirs: dirs };
+  }
+
+  async function listEntry(dirEntry) {
+    var files = [], dirs = [];
+    var reader = dirEntry.createReader();
+    while (true) {
+      var batch = await new Promise(function (res, rej) { reader.readEntries(res, rej); });
+      if (!batch.length) break;
+      for (var i = 0; i < batch.length; i++) {
+        var e = batch[i];
+        if (e.isFile) {
+          if (RELEVANT.test(e.name)) {
+            files.push({ name: e.name, file: await new Promise(function (res, rej) { e.file(res, rej); }) });
+          }
+        } else if (e.isDirectory) {
+          dirs.push(e);
+        }
+      }
+    }
+    return { files: files, dirs: dirs };
+  }
+
+  // KiCad projects keep their root sheets/boards directly in the project
+  // folder. A picked folder is therefore either a project itself (KiCad files
+  // at the top level) or a parent whose direct subfolders are projects.
+  async function scanHandle(handle) {
+    var items = [];
+    var top = await listHandle(handle);
+    if (top.files.length) {
+      items.push({ kind: 'fileEntries', name: handle.name, entries: toFileEntries(top.files), root: true, selected: true });
+    }
+    for (var i = 0; i < top.dirs.length; i++) {
+      var d = top.dirs[i];
+      try {
+        var sub = await listHandle(d.handle);
+        if (sub.files.length) items.push({ kind: 'fileEntries', name: d.name, entries: toFileEntries(sub.files), selected: true });
+      } catch (e) { console.warn('scan skipped ' + d.name, e); }
+    }
+    return items;
+  }
+
+  async function scanEntry(dirEntry) {
+    var items = [];
+    var top = await listEntry(dirEntry);
+    if (top.files.length) {
+      items.push({ kind: 'fileEntries', name: dirEntry.name, entries: toFileEntries(top.files), root: true, selected: true });
+    }
+    for (var i = 0; i < top.dirs.length; i++) {
+      var d = top.dirs[i];
+      try {
+        var sub = await listEntry(d);
+        if (sub.files.length) items.push({ kind: 'fileEntries', name: d.name, entries: toFileEntries(sub.files), selected: true });
+      } catch (e) { console.warn('scan skipped ' + d.name, e); }
+    }
+    return items;
+  }
+
+  // Fallback (<input webkitdirectory>): the browser already enumerated the
+  // selected tree, so split the list by folder depth.
+  function scanFileList(fileList) {
     var groups = new Map();
-    var list = ev.target.files || [];
-    for (var i = 0; i < list.length; i++) {
-      var file = list[i];
+    for (var i = 0; i < fileList.length; i++) {
+      var file = fileList[i];
+      if (!RELEVANT.test(file.name)) continue;
       var rel = file.webkitRelativePath || file.name;
       var parts = rel.split('/');
-      var root = parts.length > 1 ? parts.shift() : 'project';
-      if (!RELEVANT.test(file.name)) continue;
+      var root = parts.shift();
+      if (!parts.length) continue;
       if (!groups.has(root)) groups.set(root, []);
-      groups.get(root).push({ file: file, path: parts.join('/') });
+      groups.get(root).push({ path: parts.join('/'), file: file });
     }
-    for (var entry of groups) {
-      var files = [];
-      for (var e of entry[1]) files.push({ path: e.path, data: new Uint8Array(await e.file.arrayBuffer()) });
-      addProject(entry[0], files);
+    var items = [];
+    groups.forEach(function (entries, root) {
+      var before = items.length;
+      var direct = entries.filter(function (e) { return e.path.indexOf('/') < 0; });
+      if (direct.length) {
+        items.push({ kind: 'fileEntries', name: root, entries: direct, root: true, selected: true });
+      }
+      var childNames = [];
+      for (var i = 0; i < entries.length; i++) {
+        var seg = entries[i].path.split('/');
+        if (seg.length > 1 && childNames.indexOf(seg[0]) < 0) childNames.push(seg[0]);
+      }
+      for (var j = 0; j < childNames.length; j++) {
+        var name = childNames[j];
+        var subDirect = entries.filter(function (e) {
+          return e.path.split('/').length === 2 && e.path.indexOf(name + '/') === 0;
+        });
+        if (subDirect.length) {
+          items.push({
+            kind: 'fileEntries', name: name, selected: true,
+            entries: subDirect.map(function (e) { return { path: e.path.slice(name.length + 1), file: e.file }; })
+          });
+        }
+      }
+      if (items.length === before) {
+        // Neither the folder nor its direct children look like a project:
+        // keep the whole selection as a single project (deep nesting).
+        items.push({ kind: 'fileEntries', name: root, entries: entries, selected: true });
+      }
+    });
+    return items;
+  }
+
+  async function itemFiles(item) {
+    var out = [];
+    if (item.kind !== 'fileEntries') return out;
+    for (var i = 0; i < item.entries.length; i++) {
+      var e = item.entries[i];
+      out.push({ path: e.path || e.name, data: new Uint8Array(await e.file.arrayBuffer()) });
     }
+    return out;
+  }
+
+  async function addItems(items) {
+    var selected = items.filter(function (it) { return it.selected; });
+    if (!selected.length) return;
+    state.adding = true;
+    render();
+    renderModal();
+    try {
+      for (var i = 0; i < selected.length; i++) {
+        var files = await itemFiles(selected[i]);
+        addProject(selected[i].name, files);
+      }
+    } catch (err) {
+      alert((err && (err.message || err.name)) || String(err));
+    } finally {
+      state.adding = false;
+      state.pending = null;
+      $('modal').hidden = true;
+      render();
+    }
+  }
+
+  async function queueItems(items) {
+    if (!items.length) { alert(T.needFiles); return; }
+    if (items.length === 1) { await addItems(items); return; }
+    state.pending = items;
+    renderModal();
+    $('modal').hidden = false;
+  }
+
+  function renderModal() {
+    if (!state.pending) { $('modal').hidden = true; return; }
+    var items = state.pending;
+    var selected = items.filter(function (it) { return it.selected; }).length;
+    $('modalTitle').textContent = T.pickTitle;
+    $('modalHint').textContent = T.pickHint(items.length);
+    var html = '';
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      html += '<label class="modal-item"><input type="checkbox" data-idx="' + i + '"'
+        + (it.selected ? ' checked' : '') + (state.adding ? ' disabled' : '') + '>'
+        + '<span class="folder">' + esc(it.name) + '</span>'
+        + (it.root ? '<span class="tag">' + esc(T.pickRoot) + '</span>' : '') + '</label>';
+    }
+    $('modalList').innerHTML = html;
+    $('modalToggle').textContent = selected === items.length ? T.pickNone : T.pickAll;
+    $('modalToggle').disabled = state.adding;
+    $('modalCancel').textContent = T.pickCancel;
+    $('modalCancel').disabled = state.adding;
+    $('modalOk').textContent = state.adding ? T.reading : T.pickOk(selected);
+    $('modalOk').disabled = state.adding || !selected;
+  }
+
+  async function pickFolders() {
+    if (state.busy || state.adding) return;
+    if (typeof window.showDirectoryPicker === 'function') {
+      var handle;
+      try {
+        handle = await window.showDirectoryPicker({ mode: 'read' });
+      } catch (e) {
+        // Aborted by the user, or the API is blocked (iframe/permissions policy):
+        // fall back to the classic folder input.
+        if (e && e.name === 'AbortError') return;
+        console.warn('showDirectoryPicker unavailable, falling back to the file input', e);
+        $('picker').click();
+        return;
+      }
+      try {
+        var items = await scanHandle(handle);
+        await queueItems(items);
+      } catch (e) {
+        alert((e && (e.message || e.name)) || String(e));
+      }
+      return;
+    }
+    $('picker').click();
+  }
+
+  // ---- input / drag & drop -------------------------------------------------
+
+  $('picker').addEventListener('change', async function (ev) {
+    if (state.busy || state.adding) { ev.target.value = ''; return; }
+    var items = scanFileList(ev.target.files || []);
     ev.target.value = '';
+    await queueItems(items);
   });
 
-  // ---- drag & drop (multiple folders) ----
   var drop = $('drop');
   var picker = $('picker');
   drop.addEventListener('click', function (e) {
     if (e.target === picker) return;
-    if (!state.busy) picker.click();
+    pickFolders();
   });
   picker.addEventListener('click', function (e) { e.stopPropagation(); });
   drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('over'); });
@@ -343,40 +576,54 @@
   drop.addEventListener('drop', async function (e) {
     e.preventDefault();
     drop.classList.remove('over');
-    if (state.busy) return;
+    if (state.busy || state.adding || state.pending) return;
     var items = e.dataTransfer && e.dataTransfer.items ? Array.prototype.slice.call(e.dataTransfer.items) : [];
     var entries = [];
     for (var i = 0; i < items.length; i++) {
-      var it = items[i];
-      var entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
-      if (entry) entries.push(entry);
+      var entry = items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
+      if (entry && entry.isDirectory) entries.push(entry);
     }
+    if (!entries.length) { alert(T.needFiles); return; }
+    var all = [];
     for (var j = 0; j < entries.length; j++) {
-      var en = entries[j];
-      if (!en.isDirectory) continue;
-      var files = [];
-      await walkEntry(en, '', files);
-      addProject(en.name, files);
+      try { all = all.concat(await scanEntry(entries[j])); } catch (err) { /* skip unreadable */ }
     }
+    await queueItems(all);
   });
 
-  async function walkEntry(entry, rel, out) {
-    if (entry.isFile) {
-      var file = await new Promise(function (res, rej) { entry.file(res, rej); });
-      if (RELEVANT.test(file.name)) out.push({ path: rel + file.name, data: new Uint8Array(await file.arrayBuffer()) });
-    } else if (entry.isDirectory) {
-      var reader = entry.createReader();
-      while (true) {
-        var batch = await new Promise(function (res, rej) { reader.readEntries(res, rej); });
-        if (!batch.length) break;
-        for (var i = 0; i < batch.length; i++) await walkEntry(batch[i], rel + entry.name + '/', out);
-      }
-    }
-  }
+  // ---- modal actions -------------------------------------------------------
 
-  // ---- actions ----
+  $('modalList').addEventListener('change', function (e) {
+    var cb = e.target;
+    if (!cb || cb.type !== 'checkbox') return;
+    var idx = Number(cb.getAttribute('data-idx'));
+    if (state.pending && state.pending[idx]) state.pending[idx].selected = cb.checked;
+    renderModal();
+  });
+
+  $('modalToggle').addEventListener('click', function () {
+    if (!state.pending || state.adding) return;
+    var allSelected = state.pending.every(function (it) { return it.selected; });
+    for (var i = 0; i < state.pending.length; i++) state.pending[i].selected = !allSelected;
+    renderModal();
+  });
+
+  $('modalOk').addEventListener('click', function () {
+    if (!state.pending || state.adding) return;
+    addItems(state.pending);
+  });
+
+  $('modalCancel').addEventListener('click', function () {
+    if (state.adding) return;
+    state.pending = null;
+    $('modal').hidden = true;
+    renderModal();
+  });
+
+  // ---- project actions -----------------------------------------------------
+
   $('convertBtn').addEventListener('click', async function () {
-    if (state.busy) return;
+    if (state.busy || state.adding) return;
     state.busy = true;
     render();
     for (var i = 0; i < state.projects.length; i++) {
@@ -401,7 +648,7 @@
   });
 
   $('clearBtn').addEventListener('click', function () {
-    if (state.busy) return;
+    if (state.busy || state.adding) return;
     state.projects = [];
     render();
   });

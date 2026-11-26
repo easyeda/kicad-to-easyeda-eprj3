@@ -19,9 +19,11 @@ Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCa
 
 Download `kicad-to-eprj3-<version>.zip` from the GitHub **Releases** page and unzip it. Open `kicad-to-eprj3.html` in a recent Chrome/Edge:
 
-1. Add one or more KiCad project folders (click or drag them onto the page).
+1. Add one or more KiCad project folders. Clicking a folder scans it and lists the projects inside, so several can be ticked at once; multiple folders can also be dropped together, and the picker can be used repeatedly.
 2. Click **Convert** — everything is processed locally; nothing is uploaded.
 3. Download the `.eprj3.zip`, unzip it, then open `<project>/<project>.eprj3` in EasyEDA Pro.
+
+Choosing a folder uses the browser's File System Access API, so no “upload files” confirmation appears (Chrome/Edge).
 
 The zip also contains the standalone JS, this guide (bilingual) and the license.
 
@@ -126,7 +128,7 @@ In a browser it exposes `window.KicadToEpj3` (`convertProjectFiles`, `zipProject
 
 ## Conversion Coverage (best-effort)
 
-Output strictly follows the official format documentation from [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) (types / field definitions / JSON Schemas), calibrated against real exported data where the schemas diverge from actual app output; see also the [official eprj3 format example project](https://github.com/easyeda/easyeda-pro-eprj3-format):
+Output strictly follows the official format documentation from [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) (types / field definitions / JSON Schemas), calibrated against real exported data where the schemas diverge from actual app output; see also the [official eprj3 format example project](https://github.com/easyeda/easyeda-eprj3-format):
 
 | KiCad | eprj3 |
 | --- | --- |
@@ -212,6 +214,7 @@ kicad-to-easyeda-eprj3/
 └── test/
     ├── smoke.js              ← End-to-end smoke suite (165 assertions)
     ├── bundle.test.js        ← Standalone bundle / browser API / HTML tests (23 assertions)
+    ├── ui.test.js            ← Browser page folder-scan / multi-select / modal tests (11 assertions)
     ├── compare/              ← KiCad ↔ eprj3 comparison (netlist/BOM/PCB primitives/stackup/ratlines)
     └── validate-format.js    ← Format validator checking generated records against the official JSON Schemas
 ```
@@ -229,13 +232,13 @@ Generated records can additionally be validated one by one against the official 
 node test/validate-format.js <generated .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ```
 
-> The validator uses `validate.js` from [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill), found in the sibling directory by default, or via the `EASYEDA_FORMAT_SKILL` environment variable. Note: the official Schemas slightly diverge from real app exports (e.g. `POUR.pourType`, PCB `ATTR.groupID`, the `DIMENSION` structure); the validator is calibrated to the real exported data.
+> The validator uses `validate.js` from [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill), found in the sibling directory by default, or via the `EASYEDA_FORMAT_SKILL` environment variable. Note: the official Schemas slightly diverge from real app exports (e.g. `POUR.pourType`, PCB `ATTR.groupID`, the `DIMENSION` structure); the validator is calibrated to the real exported data.
 
 ## Related Projects
 
-- [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) — The EasyEDA Pro file format skill pack (type index, per-primitive field definitions, JSON Schemas, validate.js); the authoritative format reference for this repository
+- [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) — The EasyEDA Pro file format skill pack (type index, per-primitive field definitions, JSON Schemas, validate.js); the authoritative format reference for this repository
 - [easyeda-eprj3-skill](https://github.com/easyeda/easyeda-eprj3-skill) — A skill pack that teaches AI coding assistants to generate `.eprj3` projects from scratch; `scripts/lib/eprj3.js` and `utils.js` in this repository come from that project's core library
-- [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format) — Official eprj3 format example project
+- [easyeda-eprj3-format](https://github.com/easyeda/easyeda-eprj3-format) — Official eprj3 format example project
 
 ## License
 

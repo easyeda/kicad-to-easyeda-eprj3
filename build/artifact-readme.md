@@ -21,25 +21,22 @@ Convert KiCad projects (`.kicad_sch` / `.kicad_pcb`) into EasyEDA Pro `.eprj3` p
 ## 方式一：浏览器页面（推荐，无需安装）
 
 1. 用 **Chrome 或 Edge**（最新版）打开 `kicad-to-eprj3.html`。
-2. 把 KiCad 工程文件夹拖进页面，或点击选择文件夹。可以一次添加多个工程。
+2. 点击选择文件夹，页面会自动识别其中的多个工程文件夹，勾选后一次添加；也可以把多个文件夹直接拖进页面。
 3. 点击「开始转换」，等待完成。
 4. 点击「下载 .eprj3.zip」，解压得到 `<工程名>/` 文件夹。
 5. 打开嘉立创EDA专业版，选择「文件 → 打开工程」，选中 `<工程名>/<工程名>.eprj3` 即可。
 
-所有转换都在你的电脑浏览器里完成，**文件不会上传**到任何服务器。
+所有转换都在你的电脑浏览器里完成，**文件不会上传**到任何服务器；选择文件夹时也不会出现“上传文件”确认框。
 
 **English**
 
 1. Open `kicad-to-eprj3.html` in a recent **Chrome or Edge**.
-2. Drag KiCad project folders onto the page (or click to pick a folder). You can add several projects.
+2. Click to choose a folder — projects inside it are detected so you can tick several at once; you can also drop multiple folders onto the page.
 3. Click **Convert** and wait for it to finish.
 4. Click **Download .eprj3.zip** and unzip it — you get a `<project>/` folder.
 5. In EasyEDA Pro choose **File → Open Project** and select `<project>/<project>.eprj3`.
 
-Everything runs locally in your browser; **no files are uploaded**.
-
-> 提示 / Tip: 工程目录中的 `*-unroute.kicad_pcb`（未布线副本）也会被转换，打开时选择需要的 PCB 即可。
-> `*-unroute.kicad_pcb` copies are converted too — simply open the PCB you need.
+Everything runs locally in your browser; **no files are uploaded** and no “upload files” confirmation appears.
 
 ---
 
@@ -101,6 +98,6 @@ A recent Chrome or Edge is recommended (folder picking and local file access are
 
 ## 许可证 / License
 
-Apache-2.0。转换规则与格式参考 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 与 [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format)。
+Apache-2.0。转换规则与格式参考 [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) 与 [easyeda-eprj3-format](https://github.com/easyeda/easyeda-eprj3-format)。
 
-Apache-2.0. Conversion rules and file formats follow [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) and [easyeda-pro-eprj3-format](https://github.com/easyeda/easyeda-pro-eprj3-format).
+Apache-2.0. Conversion rules and file formats follow [easyeda-format-skill](https://github.com/easyeda/easyeda-format-skill) and [easyeda-eprj3-format](https://github.com/easyeda/easyeda-eprj3-format).
